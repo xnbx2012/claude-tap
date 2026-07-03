@@ -3313,6 +3313,20 @@ def test_cert_generation():
     print("  test_cert_generation PASSED")
 
 
+def test_data_dir_places_ca_in_persisted_ca_subdirectory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Test CLAUDE_TAP_DATA_DIR moves CA files into the shared data volume."""
+    from claude_tap.certs import ensure_ca
+
+    monkeypatch.setenv("CLAUDE_TAP_DATA_DIR", str(tmp_path))
+
+    ca_cert_path, ca_key_path = ensure_ca()
+
+    assert ca_cert_path == tmp_path / "ca" / "ca.crt"
+    assert ca_key_path == tmp_path / "ca" / "ca-key.pem"
+    assert ca_cert_path.exists()
+    assert ca_key_path.exists()
+
+
 def test_cert_generation_migrates_legacy_pem_ca():
     """Test existing ca.pem installations are reused as ca.crt."""
     from claude_tap.certs import ensure_ca

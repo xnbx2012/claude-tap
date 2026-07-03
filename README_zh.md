@@ -554,25 +554,27 @@ claude-tap --tap-no-open
 # 拉取最新镜像
 docker pull DOCKERHUB_USER/claude-tap:latest
 
-# 运行 web_proxy 模式（浏览器/系统代理），持久化 traces 和 CA 到主机
-#   - 代理地址：   http://localhost:8080
+# 运行 web_proxy 模式（浏览器/系统代理），把 traces、CA 和配置持久化到同一个主机目录
+#   - 代理地址：      http://localhost:8080
 #   - Dashboard 地址：http://localhost:19527
+#   - 数据目录：      ./claude-tap-data
 docker run -d \
   -p 8080:8080 \
   -p 19527:19527 \
-  -v "$(pwd)/traces:/root/.traces" \
-  -v "$(pwd)/ca:/root/.claude-tap" \
+  -v "$(pwd)/claude-tap-data:/data" \
   --name claude-tap \
-  DOCKERHUB_USER/claude-tap:latest \
-  --tap-proxy-mode web_proxy --tap-host 0.0.0.0 --tap-live --tap-live-port 19527 --tap-no-open
+  DOCKERHUB_USER/claude-tap:latest
 ```
+
+镜像默认使用 `web_proxy` 模式，绑定所有容器网卡，在 `19527` 端口启用实时 dashboard，并禁用自动打开浏览器。
 
 卷挂载说明：
 
 | 主机路径 | 容器路径 | 内容 |
 |---------|---------|------|
-| `./traces` | `/root/.traces` | SQLite trace 数据库和 JSONL 会话文件 |
-| `./ca` | `/root/.claude-tap` | CA 证书（`ca.crt`）和私钥（`ca-key.pem`） |
+| `./claude-tap-data` | `/data` | CA 文件、配置、SQLite trace 数据库和导出的 trace 文件 |
+| `./claude-tap-data/ca/ca.crt` | `/data/ca/ca.crt` | HTTPS 抓包需要信任的 CA 证书 |
+| `./claude-tap-data/traces.sqlite3` | `/data/traces.sqlite3` | Trace 数据库 |
 
 端口说明：
 
@@ -581,7 +583,7 @@ docker run -d \
 | `8080` | web_proxy MITM 代理（将浏览器/系统 HTTP/HTTPS 代理指向此端口） |
 | `19527` | 实时 trace 查看器（在浏览器中打开此地址访问 dashboard） |
 
-HTTPS 抓包需要信任容器内的 CA 证书。从卷挂载的 `/root/.claude-tap/ca.crt` 安装方法见 [信任自签名 CA](docs/guides/self-signed-ca.zh.md)。
+HTTPS 抓包需要信任容器内的 CA 证书。从卷挂载的 `./claude-tap-data/ca/ca.crt` 安装方法见 [信任自签名 CA](docs/guides/self-signed-ca.zh.md)。
 
 容器启动后，将浏览器或系统 HTTP/HTTPS 代理配置为 `http://localhost:8080`，在浏览器中访问 `http://localhost:19527` 即可打开 trace dashboard。
 

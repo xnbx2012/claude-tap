@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime
 import ipaddress
 import logging
+import os
 import ssl
 import subprocess
 from pathlib import Path
@@ -23,6 +24,14 @@ log = logging.getLogger("claude-tap")
 
 # Default directory for CA files
 _DEFAULT_CA_DIR = Path.home() / ".claude-tap"
+
+
+def _default_ca_dir() -> Path:
+    override = os.environ.get("CLAUDE_TAP_DATA_DIR", "").strip()
+    if override:
+        return Path(override).expanduser() / "ca"
+    return _DEFAULT_CA_DIR
+
 
 # CA validity: 5 years
 _CA_VALIDITY_DAYS = 5 * 365
@@ -39,7 +48,7 @@ def ensure_ca(ca_dir: Path | None = None) -> tuple[Path, Path]:
 
     Returns (ca_cert_path, ca_key_path). Creates them if they don't exist.
     """
-    ca_dir = ca_dir or _DEFAULT_CA_DIR
+    ca_dir = ca_dir or _default_ca_dir()
     ca_dir.mkdir(parents=True, exist_ok=True)
 
     ca_cert_path = ca_dir / "ca.crt"

@@ -67,3 +67,14 @@ def test_config_path_follows_cloudtap_env(tmp_path: Path, monkeypatch: pytest.Mo
     path = tmp_path / "custom.json"
     monkeypatch.setenv("CLOUDTAP_CONFIG", str(path))
     assert resolve_config_path() == path.resolve()
+
+
+def test_data_dir_places_database_and_config_together(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from claude_tap.trace_store import resolve_db_path
+
+    monkeypatch.delenv("CLOUDTAP_DB", raising=False)
+    monkeypatch.delenv("CLOUDTAP_CONFIG", raising=False)
+    monkeypatch.setenv("CLAUDE_TAP_DATA_DIR", str(tmp_path))
+
+    assert resolve_db_path() == (tmp_path / "traces.sqlite3").resolve()
+    assert resolve_config_path() == (tmp_path / "config.json").resolve()

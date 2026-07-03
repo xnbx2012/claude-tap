@@ -54,11 +54,15 @@ def resolve_db_path() -> Path:
     override = os.environ.get("CLOUDTAP_DB", "").strip()
     if override:
         return Path(override).expanduser().resolve()
-    xdg_data = os.environ.get("XDG_DATA_HOME", "").strip()
-    if xdg_data:
-        base = Path(xdg_data).expanduser() / "claude-tap"
+    data_dir = os.environ.get("CLAUDE_TAP_DATA_DIR", "").strip()
+    if data_dir:
+        base = Path(data_dir).expanduser()
     else:
-        base = Path.home() / ".local" / "share" / "claude-tap"
+        xdg_data = os.environ.get("XDG_DATA_HOME", "").strip()
+        if xdg_data:
+            base = Path(xdg_data).expanduser() / "claude-tap"
+        else:
+            base = Path.home() / ".local" / "share" / "claude-tap"
     return (base / DB_FILENAME).resolve()
 
 

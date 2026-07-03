@@ -561,25 +561,27 @@ A pre-built image is published to Docker Hub on every push to `main` and every v
 # Pull the latest image
 docker pull DOCKERHUB_USER/claude-tap:latest
 
-# Run web_proxy mode (browser/system proxy), persisting traces and CA to host
-#   - Proxy:   http://localhost:8080
+# Run web_proxy mode (browser/system proxy), persisting traces, CA, and config to one host directory
+#   - Proxy:     http://localhost:8080
 #   - Dashboard: http://localhost:19527
+#   - Data:      ./claude-tap-data
 docker run -d \
   -p 8080:8080 \
   -p 19527:19527 \
-  -v "$(pwd)/traces:/root/.traces" \
-  -v "$(pwd)/ca:/root/.claude-tap" \
+  -v "$(pwd)/claude-tap-data:/data" \
   --name claude-tap \
-  DOCKERHUB_USER/claude-tap:latest \
-  --tap-proxy-mode web_proxy --tap-host 0.0.0.0 --tap-live --tap-live-port 19527 --tap-no-open
+  DOCKERHUB_USER/claude-tap:latest
 ```
+
+The image defaults to `web_proxy` mode, binds to all container interfaces, enables the live dashboard on port `19527`, and disables browser auto-open.
 
 Volume mounts:
 
 | Host path | Container path | Contents |
 |-----------|---------------|----------|
-| `./traces` | `/root/.traces` | SQLite trace DB and JSONL session files |
-| `./ca` | `/root/.claude-tap` | CA certificate (`ca.crt`) and private key (`ca-key.pem`) |
+| `./claude-tap-data` | `/data` | CA files, config, SQLite trace DB, and exported trace files |
+| `./claude-tap-data/ca/ca.crt` | `/data/ca/ca.crt` | CA certificate to trust for HTTPS capture |
+| `./claude-tap-data/traces.sqlite3` | `/data/traces.sqlite3` | Trace database |
 
 Ports:
 
@@ -588,7 +590,7 @@ Ports:
 | `8080` | web_proxy MITM proxy (configure browser/system proxy to this) |
 | `19527` | Live trace viewer (browse to this to open the dashboard) |
 
-HTTPS capture requires trusting the container's CA certificate. See [Trusting the self-signed CA](docs/guides/self-signed-ca.md) for instructions on installing `/root/.claude-tap/ca.crt` from the volume mount.
+HTTPS capture requires trusting the container's CA certificate. See [Trusting the self-signed CA](docs/guides/self-signed-ca.md) for instructions on installing `./claude-tap-data/ca/ca.crt` from the volume mount.
 
 When the container is running, configure your browser or system HTTP/HTTPS proxy to `http://localhost:8080`. Open `http://localhost:19527` in a browser to access the trace dashboard.
 

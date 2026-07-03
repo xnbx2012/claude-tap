@@ -5,17 +5,18 @@ ARG PACKAGE_VERSION=0.0.0
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CLAUDE_TAP=${PACKAGE_VERSION}
+    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CLAUDE_TAP=${PACKAGE_VERSION} \
+    CLAUDE_TAP_DATA_DIR=/data
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /root/.claude-tap /root/.traces
+    && mkdir -p /data/ca /data/traces
 
-# Trace output and CA directory are persisted at these host paths:
-#   - /root/.claude-tap   — CA certificate and private key
-#   - /root/.traces       — SQLite trace database and JSONL files
-WORKDIR /root
+# Persist this single directory to keep the CA certificate, private key,
+# trace database, and exported trace files across container restarts.
+VOLUME ["/data"]
+WORKDIR /data
 
 EXPOSE 8080 19527
 
