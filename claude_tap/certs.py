@@ -42,7 +42,8 @@ def ensure_ca(ca_dir: Path | None = None) -> tuple[Path, Path]:
     ca_dir = ca_dir or _DEFAULT_CA_DIR
     ca_dir.mkdir(parents=True, exist_ok=True)
 
-    ca_cert_path = ca_dir / "ca.pem"
+    ca_cert_path = ca_dir / "ca.crt"
+    legacy_ca_cert_path = ca_dir / "ca.pem"
     ca_key_path = ca_dir / "ca-key.pem"
 
     if ca_cert_path.exists() and ca_key_path.exists():
@@ -52,6 +53,16 @@ def ensure_ca(ca_dir: Path | None = None) -> tuple[Path, Path]:
             return ca_cert_path, ca_key_path
         except Exception:
             log.warning("Existing CA files are invalid, regenerating")
+
+    if legacy_ca_cert_path.exists() and ca_key_path.exists():
+        # Migrate existing installations from the old .pem CA filename to the
+        # install-friendly .crt filename without changing the user's trusted CA.
+        try:
+            _load_ca(legacy_ca_cert_path, ca_key_path)
+            ca_cert_path.write_bytes(legacy_ca_cert_path.read_bytes())
+            return ca_cert_path, ca_key_path
+        except Exception:
+            log.warning("Existing legacy CA files are invalid, regenerating")
 
     log.info(f"Generating new CA certificate in {ca_dir}")
     key = _generate_key()

@@ -3270,13 +3270,14 @@ def test_cert_generation():
         # CA files exist
         assert ca_cert_path.exists(), "CA cert not created"
         assert ca_key_path.exists(), "CA key not created"
-        assert ca_cert_path.name == "ca.pem"
+        assert ca_cert_path.name == "ca.crt"
         assert ca_key_path.name == "ca-key.pem"
         print("  OK: CA files created")
 
         # Key has restricted permissions (owner-only)
-        key_mode = ca_key_path.stat().st_mode & 0o777
-        assert key_mode == 0o600, f"CA key permissions too open: {oct(key_mode)}"
+        if os.name != "nt":
+            key_mode = ca_key_path.stat().st_mode & 0o777
+            assert key_mode == 0o600, f"CA key permissions too open: {oct(key_mode)}"
         print("  OK: CA key permissions restricted")
 
         # Calling ensure_ca again reuses existing files
@@ -3310,6 +3311,27 @@ def test_cert_generation():
         print("  OK: SSL context created")
 
     print("  test_cert_generation PASSED")
+
+
+def test_cert_generation_migrates_legacy_pem_ca():
+    """Test existing ca.pem installations are reused as ca.crt."""
+    from claude_tap.certs import ensure_ca
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ca_dir = Path(tmpdir)
+        legacy_cert_path, ca_key_path = ensure_ca(ca_dir)
+        legacy_cert_bytes = legacy_cert_path.read_bytes()
+        key_bytes = ca_key_path.read_bytes()
+        legacy_cert_path.rename(ca_dir / "ca.pem")
+
+        ca_cert_path, reused_key_path = ensure_ca(ca_dir)
+
+        assert ca_cert_path.name == "ca.crt"
+        assert ca_cert_path.read_bytes() == legacy_cert_bytes
+        assert reused_key_path == ca_key_path
+        assert reused_key_path.read_bytes() == key_bytes
+
+    print("  test_cert_generation_migrates_legacy_pem_ca PASSED")
 
 
 def test_parse_args_proxy_mode():

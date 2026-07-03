@@ -452,6 +452,7 @@ claude-tap --tap-client cursor -- -p --trust --model auto --continue "continue"
 - [OpenClaw setup guide](docs/guides/OPENCLAW_README.md) for integrating `claude-tap` with OpenClaw. Simplified Chinese version: [OpenClaw 设置指南](docs/guides/OPENCLAW_README.zh.md).
 - [Claude Code with DeepSeek API](docs/guides/deepseek-claude-code.md) for routing Claude Code through DeepSeek's Anthropic-compatible API. Simplified Chinese version: [Claude Code 搭配 DeepSeek API](docs/guides/deepseek-claude-code.zh.md).
 - [Client support matrix](docs/support-matrix.md) for exact environment variables, proxy modes, and URL rewrite rules.
+- [Trusting the self-signed CA](docs/guides/self-signed-ca.md) for installing the claude-tap `ca.crt` on Windows, Linux, macOS, and Docker. Simplified Chinese version: [信任自签名 CA](docs/guides/self-signed-ca.zh.md).
 
 <details>
 <summary>Qoder CLI examples</summary>
