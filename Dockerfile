@@ -15,10 +15,9 @@ RUN apt-get update \
 # Trace output and CA directory are persisted at these host paths:
 #   - /root/.claude-tap   — CA certificate and private key
 #   - /root/.traces       — SQLite trace database and JSONL files
-# Default proxy port is 8080 (forward / web_proxy).
 WORKDIR /root
 
-EXPOSE 8080
+EXPOSE 8080 19527
 
 COPY pyproject.toml README.md ./
 COPY claude_tap ./claude_tap
@@ -26,4 +25,4 @@ COPY claude_tap ./claude_tap
 RUN pip install .
 
 ENTRYPOINT ["claude-tap"]
-CMD ["--help"]
+CMD ["--tap-proxy-mode", "web_proxy", "--tap-host", "0.0.0.0", "--tap-live", "--tap-live-port", "19527", "--tap-no-open"]
