@@ -9,6 +9,7 @@ import pytest
 
 from claude_tap.history import cleanup_trace_sessions, delete_trace_history, migrate_legacy_traces
 from claude_tap.trace_store import TraceStore, get_trace_store, reset_trace_store
+from tests._auth_helpers import login, make_authed_client
 
 
 def _write_legacy_session(base: Path, stem: str, *, date: str = "2026-05-01") -> Path:
@@ -369,7 +370,6 @@ def test_cleanup_trace_sessions_removes_stale_active_sessions(trace_db) -> None:
 
 @pytest.mark.asyncio
 async def test_live_viewer_delete_history_endpoint(trace_db, tmp_path: Path) -> None:
-    import aiohttp
 
     from claude_tap import LiveViewerServer
 
@@ -380,7 +380,8 @@ async def test_live_viewer_delete_history_endpoint(trace_db, tmp_path: Path) -> 
     server = LiveViewerServer(session_id=active_session, port=0, migrate_from=tmp_path, dashboard_mode=True)
     port = await server.start()
     try:
-        async with aiohttp.ClientSession() as session:
+        async with make_authed_client() as session:
+            await login(session, port)
             async with session.delete(f"http://127.0.0.1:{port}/api/traces/2026-05-01") as resp:
                 assert resp.status == 200
                 payload = await resp.json()
@@ -402,7 +403,6 @@ async def test_shared_dashboard_delete_history_requires_force_for_active_session
     trace_db,
     tmp_path: Path,
 ) -> None:
-    import aiohttp
 
     from claude_tap import LiveViewerServer
 
@@ -423,7 +423,8 @@ async def test_shared_dashboard_delete_history_requires_force_for_active_session
     server = LiveViewerServer(port=0, migrate_from=tmp_path, dashboard_mode=True)
     port = await server.start()
     try:
-        async with aiohttp.ClientSession() as session:
+        async with make_authed_client() as session:
+            await login(session, port)
             async with session.delete(f"http://127.0.0.1:{port}/api/traces/2026-05-01") as resp:
                 assert resp.status == 200
                 payload = await resp.json()

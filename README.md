@@ -542,14 +542,19 @@ claude-tap export trace.ctap.json -o trace.html
 claude-tap --tap-output-dir ./my-traces
 claude-tap --tap-max-traces 10
 
-# Start only the proxy for custom setups
+# Start only the reverse proxy for custom base-URL setups
 claude-tap --tap-no-launch --tap-port 8080
+
+# Start a standalone browser/system HTTP(S) proxy without changing model base URLs
+claude-tap --tap-proxy-mode web_proxy --tap-port 8080
 
 # Disable browser auto-open for live and generated viewers
 claude-tap --tap-no-open
 ```
 
-In proxy-only mode, start your client in another terminal and point its base URL or proxy settings at the local proxy. Use the [client support matrix](docs/support-matrix.md) for exact wiring.
+In proxy-only reverse mode, start your client in another terminal and point its base URL at the local proxy. Use the [client support matrix](docs/support-matrix.md) for exact wiring.
+
+In `web_proxy` mode, keep the provider/model base URL set to its original upstream address and configure the browser, system, or client HTTP/HTTPS proxy to the printed `claude-tap` address, for example `http://127.0.0.1:8080`. HTTPS capture requires trusting the printed claude-tap CA certificate (`~/.claude-tap/ca.crt`); otherwise the proxy can only see the CONNECT host, not request paths or bodies. See [Trusting the self-signed CA](docs/guides/self-signed-ca.md) for Windows, Linux, macOS, and Docker instructions. Do not point the shell running `claude-tap` at the same proxy port, or outbound upstream requests can loop back into the proxy.
 
 When used as VSCode Claude Code's `claudeProcessWrapper`, claude-tap honors the Claude binary path passed by the extension.
 
@@ -570,13 +575,13 @@ All flags are forwarded to the selected client, except these `--tap-*` ones:
 --tap-no-open            Don't auto-open live or generated HTML viewers in a browser
 --tap-output-dir DIR     Trace output directory (default: ./.traces)
 --tap-port PORT          Proxy port (default: auto)
---tap-host HOST          Bind address (default: 127.0.0.1, or 0.0.0.0 in --tap-no-launch mode)
+--tap-host HOST          Bind address (default: 0.0.0.0 for web_proxy and --tap-no-launch, 127.0.0.1 otherwise)
 --tap-no-launch          Only start the proxy, don't launch client
 --tap-max-traces N       Max trace sessions to keep (default: 50, 0 = unlimited)
 --tap-store-stream-events Persist raw SSE/WebSocket event arrays during capture so viewer/export output can show them (default: off)
 --tap-no-update-check    Disable PyPI update check on startup
 --tap-no-auto-update     Check for updates but don't auto-download
---tap-proxy-mode MODE    Proxy mode: reverse or forward (default: reverse for claude/codex/kimi/kimi-code/openclaw/codebuddy, forward for agy/gemini/mimo/opencode/pi/hermes/cursor/qoder; codexapp is transcript-only)
+--tap-proxy-mode MODE    Proxy mode: reverse, forward, or web_proxy (default: reverse for claude/codex/kimi/kimi-code/openclaw/codebuddy, forward for agy/gemini/mimo/opencode/pi/hermes/cursor/qoder; web_proxy is standalone and codexapp is transcript-only)
 --tap-trust-ca           On macOS, explicitly trust the local CA in the user login keychain before launch (agy does this automatically)
 ```
 

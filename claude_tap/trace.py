@@ -37,6 +37,18 @@ class TraceWriter:
         self._has_error = False
         self._has_auxiliary_status_probe_error = False
         self._has_primary_success = False
+        self._identity_attached = False
+
+    def note_identity(self, *, upstream_session_id: str = "", user_key: str = "") -> None:
+        """Attach request-derived user/session identity to the backing session once."""
+        if self._identity_attached or (not upstream_session_id and not user_key):
+            return
+        self._store.attach_upstream_identity(
+            self.session_id,
+            upstream_session_id=upstream_session_id,
+            user_key=user_key,
+        )
+        self._identity_attached = True
 
     async def write(self, record: dict) -> None:
         """Write a record and update statistics."""

@@ -79,6 +79,11 @@ def parse_iso_date(date_str: str) -> dt.date | None:
         return None
 
 
+def _looks_absolute_repo_path(value: str) -> bool:
+    path = Path(value)
+    return path.is_absolute() or value.startswith("/") or bool(re.match(r"^[A-Za-z]:[\\/]", value))
+
+
 def _is_within_repo_root(repo_root: Path, candidate_path: Path) -> bool:
     try:
         candidate_path.relative_to(repo_root)
@@ -162,7 +167,7 @@ def check_architecture_manifest(repo_root: Path) -> CheckResult:
 
     for relative_path in expected_paths:
         candidate_path = Path(relative_path)
-        if candidate_path.is_absolute():
+        if _looks_absolute_repo_path(relative_path):
             failures.append(f"{manifest_path}: expected path must be relative: {relative_path}")
             continue
 

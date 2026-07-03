@@ -464,7 +464,9 @@ body.detail-route .main {
 .model-pill,
 .agent-pill,
 .status-pill,
-.live-pill {
+.live-pill,
+.user-pill,
+.session-pill {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -477,6 +479,63 @@ body.detail-route .main {
   line-height: 1;
   white-space: nowrap;
 }
+.user-pill,
+.session-pill {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: inherit;
+  cursor: pointer;
+}
+.user-pill:hover,
+.session-pill:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+.dim-cell {
+  color: var(--text-muted, #8a8f98);
+}
+.settings-toggle {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 16px;
+}
+.settings-toggle:hover { border-color: var(--blue); color: var(--blue); }
+.settings-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px;
+  max-width: 900px;
+}
+.settings-section { margin-bottom: 22px; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
+.settings-section:last-of-type { border-bottom: none; }
+.settings-row { display: flex; align-items: center; gap: 10px; margin: 8px 0; flex-wrap: wrap; }
+.settings-row input[type="number"], .settings-row input[type="password"] { min-width: 160px; }
+.settings-table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+.settings-table th, .settings-table td { border: 1px solid var(--border); padding: 6px 8px; text-align: left; }
+.settings-table input, .settings-table select { min-width: 110px; }
+.settings-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.settings-result { margin-top: 10px; font-family: var(--mono); white-space: pre-wrap; }
+.settings-stats { font-family: var(--mono); font-size: 12px; margin-bottom: 10px; }
+.settings-subhead { font-weight: 700; margin: 12px 0 6px; }
+.login-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+  display: flex; align-items: center; justify-content: center; z-index: 9999;
+}
+.login-overlay.hidden { display: none; }
+.login-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 8px; padding: 24px; min-width: 280px; display: flex; flex-direction: column; gap: 12px;
+}
+.login-card input { min-width: 220px; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); }
+.login-error { color: var(--red, #ef3350); font-size: 13px; }
 .token-pill {
   color: #c45a11;
   background: #fff8ea;
@@ -983,6 +1042,7 @@ pre {
     <div class="live-status"><span id="live-label">Watching</span></div>
   </div>
   <button class="theme-toggle" id="theme-toggle" title="Toggle dark mode" data-i18n-title="theme_toggle">&#9790;</button>
+  <button class="settings-toggle" id="settings-toggle" type="button" title="Settings" data-i18n-title="settings">&#9881;</button>
   <select class="lang-select" id="lang-select" title="Language" data-i18n-title="language">
     <option value="en">English</option>
     <option value="zh-CN">简体中文</option>
@@ -1017,6 +1077,14 @@ pre {
           <option value="error">Error</option>
           <option value="empty">Empty</option>
         </select>
+      </label>
+      <label class="control-field">
+        <span class="control-label" data-i18n="filter_user">User</span>
+        <select id="user-filter" class="history-select"></select>
+      </label>
+      <label class="control-field">
+        <span class="control-label" data-i18n="filter_upstream_session">Session</span>
+        <select id="upstream-session-filter" class="history-select"></select>
       </label>
 	      <div class="session-search" role="search">
 	        <input id="search" type="search" placeholder="Search messages, agents, models, paths..." data-i18n-placeholder="search_placeholder">
@@ -1068,6 +1136,8 @@ pre {
               <th data-i18n="table_tokens">Tokens</th>
               <th data-i18n="table_model">Model</th>
               <th data-i18n="table_agent">Agent</th>
+              <th data-i18n="table_user">User</th>
+              <th data-i18n="table_upstream_session">Session</th>
               <th data-i18n="table_status">Status</th>
               <th data-i18n="table_actions">Actions</th>
             </tr>
@@ -1091,6 +1161,61 @@ pre {
       <div class="empty" data-i18n="select_session">Select a session to view details.</div>
     </section>
   </section>
+
+  <section id="settings-view" class="list-view hidden">
+    <div class="dashboard-title-row">
+      <h1 class="dashboard-title" data-i18n="settings_title">Settings</h1>
+    </div>
+    <div class="settings-card">
+      <div class="settings-section">
+        <h2 data-i18n="settings_capture">Capture</h2>
+        <label class="settings-row"><input type="checkbox" id="capture-enabled"> <span data-i18n="capture_enabled">Capture enabled (uncheck to pass through without recording)</span></label>
+        <label class="settings-row"><input type="checkbox" id="capture-default-save"> <span data-i18n="capture_default_save">Save records when no rule matches</span></label>
+        <div class="settings-subhead" data-i18n="capture_rules">Per-user capture rules</div>
+        <table class="settings-table" id="capture-rules-table">
+          <thead><tr>
+            <th data-i18n="capture_rule_user">User</th>
+            <th data-i18n="capture_rule_model">Model</th>
+            <th data-i18n="capture_rule_status">Status filter</th>
+            <th data-i18n="capture_rule_save">Save</th>
+            <th></th>
+          </tr></thead>
+          <tbody id="capture-rules-body"></tbody>
+        </table>
+        <button type="button" id="capture-add-rule" data-i18n="capture_add_rule">Add rule</button>
+        <button type="button" id="capture-save" data-i18n="save">Save</button>
+      </div>
+      <div class="settings-section">
+        <h2 data-i18n="settings_cleanup">Cleanup</h2>
+        <div class="settings-stats" id="storage-stats"><span data-i18n="loading">Loading...</span></div>
+        <label class="settings-row"><span data-i18n="cleanup_max_age_days">Max age (days, 0=off)</span> <input type="number" id="cleanup-max-age" min="0" value="0"></label>
+        <label class="settings-row"><span data-i18n="cleanup_max_db_size_mb">Max DB size (MB, 0=off)</span> <input type="number" id="cleanup-max-db-size" min="0" value="0"></label>
+        <label class="settings-row"><input type="checkbox" id="cleanup-only-success"> <span data-i18n="cleanup_only_success">Only clean successful (status 2xx) sessions</span></label>
+        <div class="settings-actions">
+          <button type="button" id="cleanup-save" data-i18n="save_thresholds">Save thresholds</button>
+          <button type="button" id="cleanup-preview" data-i18n="cleanup_preview">Preview cleanup</button>
+          <button type="button" id="cleanup-run" data-i18n="cleanup_run" disabled>Run cleanup</button>
+        </div>
+        <div id="cleanup-result" class="settings-result"></div>
+      </div>
+      <div class="settings-section">
+        <h2 data-i18n="settings_password">Password</h2>
+        <label class="settings-row"><span data-i18n="new_password">New password</span> <input type="password" id="new-password" autocomplete="new-password"></label>
+        <button type="button" id="password-save" data-i18n="change_password">Change password</button>
+        <div id="password-result" class="settings-result"></div>
+      </div>
+      <button type="button" id="settings-back" data-i18n="back_to_list">Back to list</button>
+    </div>
+  </section>
+</div>
+
+<div id="login-overlay" class="login-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="login-title">
+  <div class="login-card">
+    <h2 id="login-title" data-i18n="login_title">Dashboard login</h2>
+    <input type="password" id="login-password" autocomplete="current-password" data-i18n-placeholder="password_placeholder" placeholder="Password">
+    <button type="button" id="login-submit" data-i18n="login_submit">Sign in</button>
+    <div id="login-error" class="login-error hidden"></div>
+  </div>
 </div>
 
 <div id="delete-session-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="delete-session-title" aria-describedby="delete-session-message">
@@ -1117,6 +1242,7 @@ const SESSION_DETAIL_ROUTE = /^\/dashboard\/session\/([^/]+)\/?$/;
 const CLAUDE_TAP_VERSION = "";
 const DASHBOARD_QUIT_TOKEN = "";
 const DASHBOARD_CAN_STOP = false;
+const DASHBOARD_AUTHED = false;
 
 const state = {
   sessions: [],
@@ -1129,6 +1255,8 @@ const state = {
   search: "",
   date: "all",
 	  status: "all",
+	  user: "all",
+	  upstreamSession: "all",
 	  loadingSessions: false,
 	  loadingMoreSessions: false,
 	  sessionPageSize: 100,
@@ -1139,6 +1267,8 @@ const state = {
 	  sessionsHasMore: false,
 	  dateOptions: [],
 	  hasLegacyDate: false,
+	  userOptions: [],
+	  upstreamSessionOptions: [],
 	  loadingSessionId: null,
 	  sessionRequestId: 0,
 	  pollingIntervalId: null,
@@ -1199,6 +1329,40 @@ const DASHBOARD_I18N = {
     dashboard_quit_failed: "Unable to stop dashboard service: {error}",
     dashboard: "Dashboard",
     trace_history_sessions: "trace history sessions",
+    settings_title: "Settings",
+    settings: "Settings",
+    settings_capture: "Capture",
+    capture_enabled: "Capture enabled (uncheck to pass through without recording)",
+    capture_default_save: "Save records when no rule matches",
+    capture_rules: "Per-user capture rules",
+    capture_rule_user: "User",
+    capture_rule_model: "Model",
+    capture_rule_status: "Status filter",
+    capture_rule_save: "Save",
+    capture_add_rule: "Add rule",
+    save: "Save",
+    settings_cleanup: "Cleanup",
+    cleanup_max_age_days: "Max age (days, 0=off)",
+    cleanup_max_db_size_mb: "Max DB size (MB, 0=off)",
+    cleanup_only_success: "Only clean successful (status 2xx) sessions",
+    save_thresholds: "Save thresholds",
+    cleanup_preview: "Preview cleanup",
+    cleanup_run: "Run cleanup",
+    would_delete: "Would delete",
+    cleanup_done: "Cleanup done",
+    storage_db_path: "DB path",
+    storage_db_size: "DB size",
+    storage_log_bytes: "Log bytes",
+    settings_password: "Password",
+    new_password: "New password",
+    change_password: "Change password",
+    password_changed: "Password changed",
+    back_to_list: "Back to list",
+    remove: "Remove",
+    login_title: "Dashboard login",
+    password_placeholder: "Password",
+    login_submit: "Sign in",
+    loading: "Loading...",
     dashboard_title: "Conversation Log",
     filter_date: "Date",
     filter_status: "Status",
@@ -1228,11 +1392,17 @@ const DASHBOARD_I18N = {
     table_tokens: "Tokens",
     table_model: "Model",
     table_agent: "Agent",
+    table_user: "User",
+    table_upstream_session: "Session",
     table_status: "Status",
     table_detail: "Detail",
     table_actions: "Actions",
     all_dates: "All dates",
     all_agents: "All agents",
+    all_users: "All users",
+    all_sessions: "All sessions",
+    filter_user: "User",
+    filter_upstream_session: "Session",
     no_matching_sessions: "No matching trace sessions.",
     loading_sessions: "Loading sessions...",
     loading_session: "Loading session detail...",
@@ -1307,6 +1477,40 @@ const DASHBOARD_I18N = {
     dashboard_quit_failed: "无法停止面板服务：{error}",
     dashboard: "面板",
     trace_history_sessions: "trace 历史会话",
+    settings_title: "设置",
+    settings: "设置",
+    settings_capture: "抓包",
+    capture_enabled: "启用抓包（关闭则放行不记录）",
+    capture_default_save: "无规则匹配时保存记录",
+    capture_rules: "按用户的抓包规则",
+    capture_rule_user: "用户",
+    capture_rule_model: "模型",
+    capture_rule_status: "状态过滤",
+    capture_rule_save: "保存",
+    capture_add_rule: "新增规则",
+    save: "保存",
+    settings_cleanup: "清理",
+    cleanup_max_age_days: "最大保留天数（0=关闭）",
+    cleanup_max_db_size_mb: "最大数据库大小 MB（0=关闭）",
+    cleanup_only_success: "仅清理成功（2xx）的会话",
+    save_thresholds: "保存阈值",
+    cleanup_preview: "预览清理",
+    cleanup_run: "立即清理",
+    would_delete: "将删除",
+    cleanup_done: "清理完成",
+    storage_db_path: "数据库路径",
+    storage_db_size: "数据库大小",
+    storage_log_bytes: "日志字节",
+    settings_password: "密码",
+    new_password: "新密码",
+    change_password: "修改密码",
+    password_changed: "密码已修改",
+    back_to_list: "返回列表",
+    remove: "删除",
+    login_title: "面板登录",
+    password_placeholder: "密码",
+    login_submit: "登录",
+    loading: "加载中...",
     dashboard_title: "对话日志",
     filter_date: "日期",
     filter_status: "状态",
@@ -1336,11 +1540,17 @@ const DASHBOARD_I18N = {
     table_tokens: "Token",
     table_model: "模型",
     table_agent: "Agent",
+    table_user: "用户",
+    table_upstream_session: "会话",
     table_status: "状态",
     table_detail: "详情",
     table_actions: "操作",
     all_dates: "全部日期",
     all_agents: "全部 Agent",
+    all_users: "全部用户",
+    all_sessions: "全部会话",
+    filter_user: "用户",
+    filter_upstream_session: "会话",
     no_matching_sessions: "没有匹配的 trace 会话。",
     loading_sessions: "正在加载会话...",
     loading_session: "正在加载会话详情...",
@@ -1453,6 +1663,11 @@ function fmtNumber(value) {
   return Number(value || 0).toLocaleString();
 }
 
+function shortId(value) {
+  const text = String(value || "");
+  return text.length > 8 ? text.slice(0, 8) : text;
+}
+
 function fmtTime(value) {
   if (!value) return "";
   const date = new Date(value);
@@ -1538,6 +1753,8 @@ async function fetchJSON(url, options = {}) {
 	  if (state.selectedAgent !== "all") params.set("agent", state.selectedAgent);
 	  if (state.date !== "all") params.set("date", state.date);
 	  if (state.status !== "all") params.set("status", state.status);
+	  if (state.user !== "all") params.set("user", state.user);
+	  if (state.upstreamSession !== "all") params.set("upstream_session", state.upstreamSession);
 	  return `/api/sessions?${params.toString()}`;
 	}
 
@@ -1665,13 +1882,17 @@ function updateTracePathBar(session = null) {
     renderSessions();
 	  }
 	  try {
-	    const [payload, agentsPayload] = await Promise.all([
+	    const [payload, agentsPayload, usersPayload, upstreamSessionsPayload] = await Promise.all([
 	      fetchJSON(sessionsPageUrl(0, state.sessionPageSize)),
 	      fetchJSON("/api/agents"),
+	      fetchJSON("/api/users"),
+	      fetchJSON(`/api/upstream-sessions${state.user !== "all" ? `?user=${encodeURIComponent(state.user)}` : ""}`),
 	    ]);
 	    if (requestId !== state.sessionRequestId) return;
 	    applySessionsPayload(payload, 0);
 	    applyAgentsPayload(agentsPayload);
+	    state.userOptions = usersPayload.users || [];
+	    state.upstreamSessionOptions = upstreamSessionsPayload.sessions || [];
 	    pruneSelectedSessions();
 	    renderFilters();
 	    renderAgents();
@@ -1749,10 +1970,57 @@ function renderFilters() {
   state.date = current === "all" || dateValues.includes(current) ? current : "all";
   dateFilter.value = state.date;
 	  renderStatusOptions();
+	  renderUserFilterOptions();
+	  renderUpstreamSessionFilterOptions();
 
 	  $("#stat-sessions").textContent = fmtNumber(state.sessionTotal || state.sessions.length);
 	  $("#stat-records").textContent = fmtNumber(state.sessionRecordTotal);
 	}
+
+function renderUserFilterOptions() {
+  const select = $("#user-filter");
+  if (!select) return;
+  const current = state.user;
+  const options = [["all", t("all_users")]].concat(
+    (state.userOptions || []).map(user => [user.key, `${user.key} (${fmtNumber(user.sessions)})`])
+  );
+  select.innerHTML = options.map(([value, label]) => `<option value="${esc(value)}">${esc(label)}</option>`).join("");
+  state.user = current === "all" || options.some(([value]) => value === current) ? current : "all";
+  select.value = state.user;
+}
+
+function renderUpstreamSessionFilterOptions() {
+  const select = $("#upstream-session-filter");
+  if (!select) return;
+  const current = state.upstreamSession;
+  const options = [["all", t("all_sessions")]].concat(
+    (state.upstreamSessionOptions || []).map(item => [item.key, `${item.key} (${fmtNumber(item.sessions)})`])
+  );
+  select.innerHTML = options.map(([value, label]) => `<option value="${esc(value)}">${esc(label)}</option>`).join("");
+  state.upstreamSession = current === "all" || options.some(([value]) => value === current) ? current : "all";
+  select.value = state.upstreamSession;
+}
+
+async function loadUpstreamSessionOptions() {
+  const params = new URLSearchParams();
+  if (state.user !== "all") params.set("user", state.user);
+  const query = params.toString();
+  try {
+    const payload = await fetchJSON(`/api/upstream-sessions${query ? `?${query}` : ""}`);
+    state.upstreamSessionOptions = payload.sessions || [];
+  } catch (error) {
+    console.error(error);
+    state.upstreamSessionOptions = [];
+  }
+  renderUpstreamSessionFilterOptions();
+}
+
+function setUserFilter(value) {
+  state.user = value || "all";
+  state.upstreamSession = "all";
+  loadUpstreamSessionOptions().catch(console.error);
+  refreshForFilters();
+}
 
 function renderAgents() {
   const agents = [{key: "all", label: t("all_agents"), sessions: state.sessionTotal || state.sessions.length}]
@@ -1777,11 +2045,11 @@ function renderAgents() {
 	  renderBulkEditControls(sessions);
 	  renderSessionPagination();
 	  if (state.loadingSessions && !state.sessions.length) {
-	    $("#session-list").innerHTML = `<tr><td class="loading-cell" colspan="9">${loadingMarkup(t("loading_sessions"))}</td></tr>`;
+	    $("#session-list").innerHTML = `<tr><td class="loading-cell" colspan="11">${loadingMarkup(t("loading_sessions"))}</td></tr>`;
 	    return;
 	  }
 	  if (!sessions.length) {
-	    $("#session-list").innerHTML = `<tr><td class="table-empty" colspan="9">${esc(t("no_matching_sessions"))}</td></tr>`;
+	    $("#session-list").innerHTML = `<tr><td class="table-empty" colspan="11">${esc(t("no_matching_sessions"))}</td></tr>`;
 	    return;
 	  }
 
@@ -1821,6 +2089,21 @@ function renderAgents() {
 	      openSession(button.dataset.openSession);
 	    });
 	  });
+	  document.querySelectorAll("[data-filter-user]").forEach(button => {
+	    button.addEventListener("click", event => {
+	      event.preventDefault();
+	      event.stopPropagation();
+	      setUserFilter(button.dataset.filterUser);
+	    });
+	  });
+	  document.querySelectorAll("[data-filter-upstream-session]").forEach(button => {
+	    button.addEventListener("click", event => {
+	      event.preventDefault();
+	      event.stopPropagation();
+	      state.upstreamSession = button.dataset.filterUpstreamSession;
+	      refreshForFilters();
+	    });
+	  });
 	}
 
 function isSessionRowActionTarget(target) {
@@ -1849,6 +2132,8 @@ function isSessionRowActionTarget(target) {
       <td><span class="token-pill">${fmtNumber(session.total_tokens)}</span></td>
       <td><span class="model-pill" title="${esc(session.model || t("unknown"))}">${esc(session.model || t("unknown"))}</span></td>
       <td><span class="agent-pill">${esc(session.agent || t("unknown"))}</span></td>
+      <td>${session.user_key ? `<button type="button" class="user-pill" data-filter-user="${esc(session.user_key)}" title="${esc(session.user_key)}">${esc(session.user_key)}</button>` : `<span class="dim-cell">${esc(t("unknown"))}</span>`}</td>
+      <td>${session.display_session_id && session.display_session_id !== session.id ? `<button type="button" class="session-pill" data-filter-upstream-session="${esc(session.display_session_id)}" title="${esc(session.display_session_id)}">${esc(session.display_session_id)}</button>` : `<span class="mono-cell dim-cell">${esc(shortId(session.id))}</span>`}</td>
       <td><span class="status-pill ${status.className}">${esc(status.label)}</span></td>
 	      <td>
 	        <div class="row-actions">
@@ -2079,6 +2364,7 @@ function showListView() {
   document.body.classList.remove("detail-route");
   $("#list-view").classList.remove("hidden");
   $("#detail-view").classList.add("hidden");
+  $("#settings-view").classList.add("hidden");
   updateTracePathBar();
   if (window.location.pathname.match(SESSION_DETAIL_ROUTE)) {
     history.replaceState(null, "", "/dashboard");
@@ -2089,6 +2375,15 @@ function showDetailView() {
   document.body.classList.add("detail-route");
   $("#list-view").classList.add("hidden");
   $("#detail-view").classList.remove("hidden");
+  $("#settings-view").classList.add("hidden");
+}
+
+function showSettingsView() {
+  state.view = "settings";
+  $("#list-view").classList.add("hidden");
+  $("#detail-view").classList.add("hidden");
+  $("#settings-view").classList.remove("hidden");
+  loadSettings().catch(console.error);
 }
 
 function showDetailLoading(sessionId) {
@@ -2484,6 +2779,15 @@ $("#status-filter").addEventListener("change", event => {
   refreshForFilters();
 });
 
+$("#user-filter").addEventListener("change", event => {
+  setUserFilter(event.target.value);
+});
+
+$("#upstream-session-filter").addEventListener("change", event => {
+  state.upstreamSession = event.target.value;
+  refreshForFilters();
+});
+
 	$("#refresh").addEventListener("click", () => refreshSessions({preserveSelection: true, refreshDetail: true}).catch(console.error));
 	$("#edit-sessions").addEventListener("click", () => setEditMode(!state.editMode));
 	$("#done-edit-sessions").addEventListener("click", () => setEditMode(false));
@@ -2509,16 +2813,236 @@ if (dashboardQuitButton) {
 }
 $("#lang-select").addEventListener("change", event => setLang(event.target.value));
 
+function showLoginOverlay() {
+  const overlay = $("#login-overlay");
+  if (!overlay) return;
+  overlay.classList.remove("hidden");
+  const input = $("#login-password");
+  if (input) input.focus();
+}
+
+async function submitLogin() {
+  const input = $("#login-password");
+  const errorEl = $("#login-error");
+  const button = $("#login-submit");
+  if (!input) return;
+  const password = input.value;
+  if (button) button.disabled = true;
+  if (errorEl) errorEl.classList.add("hidden");
+  try {
+    await fetch("/api/auth/login", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({password}),
+    });
+    location.reload();
+  } catch (error) {
+    if (errorEl) {
+      errorEl.textContent = error.message || "Login failed";
+      errorEl.classList.remove("hidden");
+    }
+    if (button) button.disabled = false;
+  }
+}
+
+function wireAuthAndSettings() {
+  if (!DASHBOARD_AUTHED) {
+    showLoginOverlay();
+    const submit = $("#login-submit");
+    if (submit) submit.addEventListener("click", () => submitLogin().catch(console.error));
+    const input = $("#login-password");
+    if (input) {
+      input.addEventListener("keydown", event => {
+        if (event.key === "Enter") submitLogin().catch(console.error);
+      });
+    }
+    return;
+  }
+  const settingsButton = $("#settings-toggle");
+  if (settingsButton) settingsButton.addEventListener("click", showSettingsView);
+  const backButton = $("#settings-back");
+  if (backButton) backButton.addEventListener("click", showListView);
+  const captureSave = $("#capture-save");
+  if (captureSave) captureSave.addEventListener("click", () => saveCaptureSettings().catch(console.error));
+  const captureAddRule = $("#capture-add-rule");
+  if (captureAddRule) captureAddRule.addEventListener("click", () => addCaptureRuleRow({}, true));
+  const cleanupSave = $("#cleanup-save");
+  if (cleanupSave) cleanupSave.addEventListener("click", () => saveCleanupSettings().catch(console.error));
+  const cleanupPreview = $("#cleanup-preview");
+  if (cleanupPreview) cleanupPreview.addEventListener("click", () => previewCleanup().catch(console.error));
+  const cleanupRun = $("#cleanup-run");
+  if (cleanupRun) cleanupRun.addEventListener("click", () => runCleanup().catch(console.error));
+  const passwordSave = $("#password-save");
+  if (passwordSave) passwordSave.addEventListener("click", () => changePassword().catch(console.error));
+}
+
+function fmtBytes(n) {
+  const value = Number(n || 0);
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+async function loadSettings() {
+  const [settings, stats] = await Promise.all([
+    fetchJSON("/api/settings"),
+    fetchJSON("/api/storage/stats"),
+    fetchJSON("/api/users").catch(() => ({users: []})),
+  ]);
+  renderStorageStats(stats);
+  renderCaptureSettings(settings.capture || {}, settings._users || []);
+  renderCleanupSettings(settings.cleanup || {});
+  return settings;
+}
+
+function renderStorageStats(stats) {
+  const el = $("#storage-stats");
+  if (!el) return;
+  const lines = [
+    `${t("storage_db_path") || "DB"}: ${esc(stats.db_path || "")}`,
+    `${t("storage_db_size") || "DB size"}: ${fmtBytes(stats.db_size_bytes)}`,
+    `${t("stats_sessions") || "Sessions"}: ${fmtNumber(stats.session_count)}`,
+    `${t("stats_records") || "Records"}: ${fmtNumber(stats.record_count)}`,
+    `${t("storage_log_bytes") || "Log bytes"}: ${fmtBytes(stats.log_bytes_estimate)}`,
+  ];
+  el.innerHTML = lines.map(line => `<div>${line}</div>`).join("");
+}
+
+function renderCaptureSettings(capture, _users) {
+  const enabled = $("#capture-enabled");
+  const defaultSave = $("#capture-default-save");
+  if (enabled) enabled.checked = capture.enabled !== false;
+  if (defaultSave) defaultSave.checked = capture.default_save !== false;
+  const body = $("#capture-rules-body");
+  if (body) {
+    body.innerHTML = "";
+    (capture.rules || []).forEach(rule => addCaptureRuleRow(rule, false));
+  }
+}
+
+function addCaptureRuleRow(rule, focus) {
+  const body = $("#capture-rules-body");
+  if (!body) return;
+  const tr = document.createElement("tr");
+  tr.innerHTML = `
+    <td><input type="text" class="rule-user" value="${esc(rule.user_key || "")}" placeholder="*"></td>
+    <td><input type="text" class="rule-model" value="${esc(rule.model || "")}" placeholder="*"></td>
+    <td><select class="rule-status">
+      ${["all","success","non_200"].map(v => `<option value="${v}" ${rule.status_filter === v ? "selected" : ""}>${v}</option>`).join("")}
+      <option value="200" ${rule.status_filter === "200" ? "selected" : ""}>200</option>
+      <option value="429" ${rule.status_filter === "429" ? "selected" : ""}>429</option>
+      <option value="500" ${rule.status_filter === "500" ? "selected" : ""}>500</option>
+    </select></td>
+    <td><input type="checkbox" class="rule-save" ${rule.save === false ? "" : "checked"}></td>
+    <td><button type="button" class="rule-remove">${esc(t("remove") || "Remove")}</button></td>
+  `;
+  tr.querySelector(".rule-remove").addEventListener("click", () => tr.remove());
+  body.appendChild(tr);
+  if (focus) {
+    const input = tr.querySelector(".rule-user");
+    if (input) input.focus();
+  }
+}
+
+async function saveCaptureSettings() {
+  const capture = {
+    enabled: $("#capture-enabled") ? $("#capture-enabled").checked : true,
+    default_save: $("#capture-default-save") ? $("#capture-default-save").checked : true,
+    rules: [],
+  };
+  document.querySelectorAll("#capture-rules-body tr").forEach(tr => {
+    capture.rules.push({
+      user_key: tr.querySelector(".rule-user")?.value.trim() || "",
+      model: tr.querySelector(".rule-model")?.value.trim() || "",
+      status_filter: tr.querySelector(".rule-status")?.value || "all",
+      save: tr.querySelector(".rule-save")?.checked !== false,
+    });
+  });
+  await fetchJSON("/api/settings/capture", {
+    method: "PUT",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(capture),
+  });
+}
+
+function renderCleanupSettings(cleanup) {
+  const age = $("#cleanup-max-age");
+  const size = $("#cleanup-max-db-size");
+  const onlySuccess = $("#cleanup-only-success");
+  if (age) age.value = cleanup.max_age_days || 0;
+  if (size) size.value = cleanup.max_db_size_mb || 0;
+  if (onlySuccess) onlySuccess.checked = !!cleanup.only_success;
+}
+
+async function saveCleanupSettings() {
+  const cleanup = {
+    max_age_days: Number($("#cleanup-max-age")?.value || 0),
+    max_db_size_mb: Number($("#cleanup-max-db-size")?.value || 0),
+    only_success: !!$("#cleanup-only-success")?.checked,
+  };
+  await fetchJSON("/api/settings/cleanup", {
+    method: "PUT",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(cleanup),
+  });
+}
+
+function currentCleanupPayload() {
+  return {
+    max_age_days: Number($("#cleanup-max-age")?.value || 0),
+    max_db_size_mb: Number($("#cleanup-max-db-size")?.value || 0),
+    only_success: !!$("#cleanup-only-success")?.checked,
+  };
+}
+
+async function previewCleanup() {
+  const result = await fetchJSON("/api/storage/cleanup/preview", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(currentCleanupPayload()),
+  });
+  $("#cleanup-run").disabled = false;
+  $("#cleanup-result").textContent = `${t("would_delete") || "Would delete"}: ${result.deleted_sessions} ${t("stats_sessions") || "sessions"}, ${result.deleted_records} ${t("stats_records") || "records"}, ${result.deleted_logs} logs`;
+}
+
+async function runCleanup() {
+  await fetchJSON("/api/storage/cleanup/run", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({...currentCleanupPayload(), confirm: true}),
+  });
+  $("#cleanup-run").disabled = true;
+  $("#cleanup-result").textContent = t("cleanup_done") || "Cleanup done";
+  await loadSettings();
+  await refreshSessions({preserveSelection: false}).catch(console.error);
+}
+
+async function changePassword() {
+  const input = $("#new-password");
+  if (!input || !input.value) return;
+  await fetchJSON("/api/auth/password", {
+    method: "PUT",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({password: input.value}),
+  });
+  $("#password-result").textContent = t("password_changed") || "Password changed";
+  input.value = "";
+}
+
 	applyI18n();
 	applyVersionBadge();
 	initTheme();
 	updateClock();
 	setInterval(updateClock, 1000);
+	wireAuthAndSettings();
 	const hasDashboardEvents = connectEvents();
-	refreshSessions({preserveSelection: false}).catch(error => {
-	  $("#detail").innerHTML = `<div class="empty">${esc(t("unable_load_dashboard", {error: error.message}))}</div>`;
-	});
-	if (!hasDashboardEvents) {
+	if (DASHBOARD_AUTHED) {
+	  refreshSessions({preserveSelection: false}).catch(error => {
+	    $("#detail").innerHTML = `<div class="empty">${esc(t("unable_load_dashboard", {error: error.message}))}</div>`;
+	  });
+	}
+	if (!hasDashboardEvents && DASHBOARD_AUTHED) {
 	  setInterval(() => refreshSessions({preserveSelection: true}).catch(console.error), 5000);
 	}
 </script>

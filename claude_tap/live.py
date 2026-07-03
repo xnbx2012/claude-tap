@@ -12,19 +12,28 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
+import aiohttp
 from aiohttp import web
 
+from claude_tap.config import get_config, save_config, verify_password
 from claude_tap.dashboard import (
     build_session_query,
     dashboard_trace_snapshot,
     ensure_trace_store,
     list_trace_agents,
     list_trace_sessions,
+    list_trace_upstream_sessions,
+    list_trace_users,
     load_trace_session,
     read_dashboard_template,
     redact_dashboard_summary,
 )
-from claude_tap.history import delete_trace_history, migrate_legacy_traces
+from claude_tap.history import (
+    cleanup_trace_history_by_criteria,
+    delete_trace_history,
+    migrate_legacy_traces,
+    trace_storage_stats,
+)
 from claude_tap.shared_dashboard import CLAUDE_TAP_VERSION, dashboard_url
 from claude_tap.trace_store import get_trace_store, resolve_db_path
 from claude_tap.viewer import (
@@ -41,6 +50,37 @@ DEFAULT_SESSION_PAGE_LIMIT = 100
 MAX_SESSION_PAGE_LIMIT = 500
 
 _DASHBOARD_QUIT_TOKEN_HEADER = "X-Claude-Tap-Dashboard-Token"
+
+_PUBLIC_PATHS = frozenset(
+    {
+        "/api/auth/login",
+        "/api/auth/status",
+        "/dashboard/health",
+        # /dashboard/quit uses its own token-based auth via X-Claude-Tap-Dashboard-Token.
+        # It's a server-to-server coordination call (e.g. stop_shared_dashboard) and
+        # must remain reachable without the user-facing login cookie.
+        "/dashboard/quit",
+    }
+)
+
+
+def _is_html_dashboard_path(path: str) -> bool:
+    normalized = path.rstrip("/")
+    return normalized in {"", "/dashboard"} or normalized.startswith("/dashboard/session/")
+
+
+@web.middleware
+async def _noop_middleware(request: web.Request, handler):
+    return await handler(request)
+
+
+def _client_session_token(request: web.Request, cookie_name: str) -> str:
+    cookies = request.cookies or {}
+    return str(cookies.get(cookie_name, ""))
+
+
+def _is_api_request(request: web.Request) -> bool:
+    return request.path.startswith("/api/") or request.path in {"/dashboard/quit"}
 
 
 def _split_host_port(value: str) -> tuple[str, int | None]:
@@ -163,6 +203,8 @@ def _session_query_from_request(request: web.Request):
         status=request.query.get("status", ""),
         search=request.query.get("search", ""),
         agent=request.query.get("agent", ""),
+        user=request.query.get("user", ""),
+        upstream_session=request.query.get("upstream_session", ""),
     )
 
 
@@ -194,13 +236,15 @@ class LiveViewerServer:
         self._dashboard_watch_task: asyncio.Task | None = None
         self._dashboard_snapshot: dict[str, tuple[str, int, str]] = {}
         self._dashboard_quit_token = secrets.token_urlsafe(32)
+        self._auth_session_tokens: set[str] = set()
+        self._auth_cookie_name = "claude_tap_dashboard_session"
 
     async def start(self) -> int:
         """Start the viewer server and return the actual port."""
         if self.migrate_from is not None:
             migrate_legacy_traces(self.migrate_from)
 
-        app = web.Application()
+        app = web.Application(middlewares=[self._auth_middleware])
         if self.dashboard_mode:
             app.router.add_get("/", self._handle_dashboard_index)
         else:
@@ -217,6 +261,8 @@ class LiveViewerServer:
         app.router.add_get("/api/traces/{date}", self._handle_traces_by_date)
         app.router.add_delete("/api/traces/{date}", self._handle_delete_traces_by_date)
         app.router.add_get("/api/agents", self._handle_agents)
+        app.router.add_get("/api/users", self._handle_users)
+        app.router.add_get("/api/upstream-sessions", self._handle_upstream_sessions)
         app.router.add_get("/api/sessions", self._handle_sessions)
         app.router.add_delete("/api/sessions", self._handle_delete_sessions)
         app.router.add_delete("/api/sessions/{session_id}", self._handle_delete_session)
@@ -226,6 +272,16 @@ class LiveViewerServer:
         app.router.add_get("/api/sessions/{session_id}/export/compact", self._handle_export_compact)
         app.router.add_get("/api/sessions/{session_id}/export/log", self._handle_export_log)
         app.router.add_get("/api/sessions/{session_id}/export/html", self._handle_export_html)
+        app.router.add_post("/api/auth/login", self._handle_auth_login)
+        app.router.add_post("/api/auth/logout", self._handle_auth_logout)
+        app.router.add_get("/api/auth/status", self._handle_auth_status)
+        app.router.add_put("/api/auth/password", self._handle_auth_password)
+        app.router.add_get("/api/settings", self._handle_settings_get)
+        app.router.add_put("/api/settings/capture", self._handle_settings_capture)
+        app.router.add_put("/api/settings/cleanup", self._handle_settings_cleanup)
+        app.router.add_get("/api/storage/stats", self._handle_storage_stats)
+        app.router.add_post("/api/storage/cleanup/preview", self._handle_storage_cleanup_preview)
+        app.router.add_post("/api/storage/cleanup/run", self._handle_storage_cleanup_run)
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -336,6 +392,11 @@ class LiveViewerServer:
                 "const DASHBOARD_CAN_STOP = true;",
                 1,
             )
+        html = html.replace(
+            "const DASHBOARD_AUTHED = false;",
+            f"const DASHBOARD_AUTHED = {'true' if self._is_authed(request) else 'false'};",
+            1,
+        )
         return web.Response(text=html, content_type="text/html")
 
     async def _handle_dashboard_session_detail(self, request: web.Request) -> web.Response:
@@ -376,6 +437,145 @@ class LiveViewerServer:
 
         asyncio.create_task(stop_soon())
         return web.json_response({"ok": True})
+
+    def _is_authed(self, request: web.Request) -> bool:
+        token = _client_session_token(request, self._auth_cookie_name)
+        return bool(token) and token in self._auth_session_tokens
+
+    async def _handle_auth_login(self, request: web.Request) -> web.Response:
+        try:
+            payload = await request.json()
+        except (json.JSONDecodeError, aiohttp.ContentTypeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        password = str(payload.get("password", ""))
+        if not verify_password(password, get_config()):
+            return web.json_response({"ok": False, "error": "invalid password"}, status=401)
+        token = secrets.token_urlsafe(32)
+        self._auth_session_tokens.add(token)
+        response = web.json_response({"ok": True})
+        response.set_cookie(
+            self._auth_cookie_name,
+            token,
+            httponly=True,
+            samesite="Lax",
+            path="/",
+        )
+        return response
+
+    async def _handle_auth_logout(self, request: web.Request) -> web.Response:
+        token = _client_session_token(request, self._auth_cookie_name)
+        self._auth_session_tokens.discard(token)
+        response = web.json_response({"ok": True})
+        response.del_cookie(self._auth_cookie_name, path="/")
+        return response
+
+    async def _handle_auth_status(self, request: web.Request) -> web.Response:
+        return web.json_response({"authed": self._is_authed(request)})
+
+    async def _handle_auth_password(self, request: web.Request) -> web.Response:
+        try:
+            payload = await request.json()
+        except (json.JSONDecodeError, aiohttp.ContentTypeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        new_password = str(payload.get("password", ""))
+        if not new_password:
+            return web.json_response({"ok": False, "error": "password required"}, status=400)
+        config = get_config()
+        config = {**config, "dashboard_password": new_password}
+        save_config(config)
+        return web.json_response({"ok": True})
+
+    async def _handle_settings_get(self, request: web.Request) -> web.Response:
+        config = get_config()
+        return web.json_response(
+            {
+                "auth": {"password_set": bool(config.get("dashboard_password"))},
+                "capture": config.get("capture", {}),
+                "cleanup": config.get("cleanup", {}),
+            }
+        )
+
+    async def _handle_settings_capture(self, request: web.Request) -> web.Response:
+        try:
+            payload = await request.json()
+        except (json.JSONDecodeError, aiohttp.ContentTypeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        config = get_config()
+        capture = config.get("capture") if isinstance(config.get("capture"), dict) else {}
+        capture.update({k: v for k, v in payload.items() if k in {"enabled", "default_save", "rules"}})
+        config["capture"] = capture
+        save_config(config)
+        return web.json_response({"ok": True, "capture": capture})
+
+    async def _handle_settings_cleanup(self, request: web.Request) -> web.Response:
+        try:
+            payload = await request.json()
+        except (json.JSONDecodeError, aiohttp.ContentTypeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        config = get_config()
+        cleanup = config.get("cleanup") if isinstance(config.get("cleanup"), dict) else {}
+        for key in {"max_age_days", "max_db_size_mb"}:
+            value = payload.get(key)
+            if isinstance(value, int):
+                cleanup[key] = max(0, value)
+        if isinstance(payload.get("only_success"), bool):
+            cleanup["only_success"] = payload["only_success"]
+        config["cleanup"] = cleanup
+        save_config(config)
+        return web.json_response({"ok": True, "cleanup": cleanup})
+
+    async def _handle_storage_stats(self, request: web.Request) -> web.Response:
+        return web.json_response(trace_storage_stats())
+
+    async def _handle_storage_cleanup_preview(self, request: web.Request) -> web.Response:
+        params = await self._cleanup_params_from_request(request)
+        result = cleanup_trace_history_by_criteria(**params, dry_run=True)
+        return web.json_response(result)
+
+    async def _handle_storage_cleanup_run(self, request: web.Request) -> web.Response:
+        try:
+            payload = await request.json()
+        except (json.JSONDecodeError, aiohttp.ContentTypeError):
+            payload = {}
+        if not isinstance(payload, dict) or not payload.get("confirm"):
+            return web.json_response({"ok": False, "error": "confirmation required"}, status=400)
+        params = await self._cleanup_params_from_request(request)
+        result = cleanup_trace_history_by_criteria(**params, dry_run=False)
+        return web.json_response({"ok": True, **result})
+
+    async def _cleanup_params_from_request(self, request: web.Request) -> dict:
+        try:
+            payload = await request.json()
+        except (json.JSONDecodeError, aiohttp.ContentTypeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        return {
+            "max_age_days": int(payload.get("max_age_days", 0) or 0),
+            "max_db_size_mb": int(payload.get("max_db_size_mb", 0) or 0),
+            "only_success": bool(payload.get("only_success", False)),
+        }
+
+    @web.middleware
+    async def _auth_middleware(self, request: web.Request, handler):
+        path = request.path
+        if not self.dashboard_mode or path in _PUBLIC_PATHS:
+            return await handler(request)
+        if self._is_authed(request):
+            return await handler(request)
+        if _is_api_request(request):
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+        # HTML dashboard pages fall through to the index handler, which renders a
+        # login overlay based on the injected DASHBOARD_AUTHED flag.
+        return await handler(request)
 
     async def _handle_index(self, request: web.Request) -> web.Response:
         """Serve the viewer HTML with live mode enabled."""
@@ -494,6 +694,16 @@ class LiveViewerServer:
         self._finalize_stale_active_sessions()
         live_count = await self._current_live_record_count()
         return web.json_response({"agents": list_trace_agents(self.session_id, live_record_count=live_count)})
+
+    async def _handle_users(self, request: web.Request) -> web.Response:
+        """Return Authorization-derived user buckets."""
+        self._finalize_stale_active_sessions()
+        return web.json_response({"users": list_trace_users()})
+
+    async def _handle_upstream_sessions(self, request: web.Request) -> web.Response:
+        """Return upstream session id buckets, optionally narrowed by user."""
+        self._finalize_stale_active_sessions()
+        return web.json_response({"sessions": list_trace_upstream_sessions(request.query.get("user", ""))})
 
     async def _handle_sessions(self, request: web.Request) -> web.Response:
         """Return trace history sessions."""

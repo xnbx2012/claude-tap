@@ -8,7 +8,51 @@ from pathlib import Path
 import pytest
 
 from claude_tap.cli_clients import _extend_no_proxy
+from claude_tap.config import reset_config_cache, save_config
 from claude_tap.trace_store import get_trace_store, reset_trace_store
+
+TEST_DASHBOARD_PASSWORD = "test-dashboard-pw"
+
+_BROWSER_TEST_FILES = {
+    "test_bedrock_viewer.py",
+    "test_dashboard.py",
+    "test_gemini_viewer.py",
+    "test_hermes_viewer.py",
+    "test_nav_browser.py",
+    "test_opencode_viewer.py",
+    "test_perf_viewer.py",
+    "test_responses_browser.py",
+    "test_search_browser.py",
+    "test_verify_screenshots.py",
+    "test_viewer_contracts.py",
+}
+_BROWSER_TEST_NAMES = {
+    "test_dashboard_session_route_serves_standalone_viewer",
+    "test_dashboard_session_export_menu_is_not_clipped_on_mobile",
+    "test_dashboard_bulk_delete_edit_mode_focuses_confirmation_dialog",
+}
+
+
+def pytest_collection_modifyitems(items):
+    """Skip browser-launching tests unless explicitly enabled."""
+    if os.environ.get("CLOUDTAP_RUN_BROWSER_TESTS") == "1":
+        return
+    reason = "browser-launching tests are disabled unless CLOUDTAP_RUN_BROWSER_TESTS=1"
+    skip_browser = pytest.mark.skip(reason=reason)
+    for item in items:
+        file_name = Path(str(item.fspath)).name
+        if file_name in _BROWSER_TEST_FILES or item.name in _BROWSER_TEST_NAMES:
+            item.add_marker(skip_browser)
+
+
+@pytest.fixture(autouse=True)
+def isolate_config(tmp_path, monkeypatch):
+    """Give each test an isolated config.json so dashboard auth does not leak."""
+    monkeypatch.setenv("CLOUDTAP_CONFIG", str(tmp_path / "config.json"))
+    reset_config_cache()
+    save_config({"dashboard_password": TEST_DASHBOARD_PASSWORD})
+    yield
+    reset_config_cache()
 
 
 def trace_db_path(trace_dir: str | Path) -> Path:

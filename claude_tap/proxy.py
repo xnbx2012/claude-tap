@@ -19,6 +19,9 @@ from aiohttp import web
 from yarl import URL
 
 from claude_tap.bedrock import attach_bedrock_errors, bedrock_model_from_path, is_bedrock_eventstream_path
+from claude_tap.capture_policy import should_save_record
+from claude_tap.config import get_config
+from claude_tap.identity import extract_session_identity
 from claude_tap.sse import SSEReassembler
 from claude_tap.trace import TraceWriter
 from claude_tap.upstream import build_upstream_url, format_upstream_error
@@ -46,7 +49,6 @@ HOP_BY_HOP = frozenset(
 
 SENSITIVE_HEADER_KEYS = frozenset(
     {
-        "authorization",
         "cookie",
         "set-cookie",
         "set-cookie2",
@@ -64,7 +66,7 @@ SENSITIVE_HEADER_KEYS = frozenset(
         "cosy-user",
     }
 )
-PREFIX_REDACTED_HEADER_KEYS = frozenset({"authorization", "x-api-key"})
+PREFIX_REDACTED_HEADER_KEYS = frozenset({"x-api-key"})
 
 
 def filter_headers(headers: dict[str, str], *, redact_keys: bool = False) -> dict[str, str]:
@@ -556,6 +558,19 @@ def _bedrock_eventstream_header(name: str, value: str) -> bytes:
 # ---------------------------------------------------------------------------
 
 
+async def _write_if_policy_allows(writer: TraceWriter, record: dict) -> None:
+    """Write a record unless the capture policy says to skip it."""
+    identity = record.get("capture_identity") if isinstance(record, dict) else None
+    user_key = str(identity.get("user_key") or "") if isinstance(identity, dict) else ""
+    request = record.get("request") if isinstance(record, dict) else None
+    req_body = request.get("body") if isinstance(request, dict) else None
+    model = req_body.get("model", "") if isinstance(req_body, dict) else ""
+    response = record.get("response") if isinstance(record, dict) else None
+    status = response.get("status", 0) if isinstance(response, dict) else 0
+    if should_save_record(get_config(), user_key=user_key, model=model, status=status):
+        await writer.write(record)
+
+
 async def proxy_handler(request: web.Request) -> web.StreamResponse:
     # Reject requests to unknown paths (scanner/crawler protection)
     ctx: dict = request.app["trace_ctx"]
@@ -587,6 +602,8 @@ async def proxy_handler(request: web.Request) -> web.StreamResponse:
     # aiohttp auto-decompresses request bodies (gzip/deflate/zstd), so
     # request.read() returns plain bytes even when Content-Encoding is set.
     body = await request.read()
+    upstream_session_id, user_key = extract_session_identity(request.headers)
+    writer.note_identity(upstream_session_id=upstream_session_id, user_key=user_key)
 
     fwd_headers = filter_headers(request.headers)
     fwd_headers.pop("Host", None)
@@ -650,7 +667,7 @@ async def proxy_handler(request: web.Request) -> web.StreamResponse:
             resp_body,
             upstream_base_url=target,
         )
-        await writer.write(record)
+        await _write_if_policy_allows(writer, record)
         log.info(f"{log_prefix} ← 200 capture-only ({duration_ms}ms, upstream skipped)")
         if is_streaming:
             return web.Response(
@@ -781,7 +798,7 @@ async def _handle_streaming(
         sse_events=reassembler.events,
         upstream_base_url=upstream_base_url,
     )
-    await writer.write(record)
+    await _write_if_policy_allows(writer, record)
 
     return resp
 
@@ -832,7 +849,7 @@ async def _handle_non_streaming(
         resp_body,
         upstream_base_url=upstream_base_url,
     )
-    await writer.write(record)
+    await _write_if_policy_allows(writer, record)
 
     return web.Response(
         status=upstream_resp.status,
@@ -877,4 +894,10 @@ def _build_record(
         record["response"]["sse_events"] = sse_events
     if upstream_base_url:
         record["upstream_base_url"] = upstream_base_url
+    upstream_session_id, user_key = extract_session_identity(req_headers)
+    if upstream_session_id or user_key:
+        record["capture_identity"] = {
+            "upstream_session_id": upstream_session_id,
+            "user_key": user_key,
+        }
     return record

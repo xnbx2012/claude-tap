@@ -67,7 +67,7 @@ from claude_tap.codex_app_transcript import (
 )
 from claude_tap.cursor_transcript import import_cursor_transcripts
 from claude_tap.forward_proxy import ForwardProxyServer
-from claude_tap.history import cleanup_trace_sessions, migrate_legacy_traces
+from claude_tap.history import cleanup_trace_history_by_criteria, cleanup_trace_sessions, migrate_legacy_traces
 from claude_tap.live import LiveViewerServer
 from claude_tap.proxy import proxy_handler
 from claude_tap.shared_dashboard import (
@@ -269,12 +269,15 @@ def _trust_ca_for_current_user(ca_cert_path: Path) -> int:
 
 
 def _ensure_ca_trust_for_forward_proxy(args: argparse.Namespace, ca_cert_path: Path) -> int:
-    """Ensure CA trust when forward-proxy clients need macOS keychain trust."""
-    if args.proxy_mode != "forward":
+    """Ensure CA trust when MITM proxy modes need macOS keychain trust."""
+    if args.proxy_mode not in {"forward", "web_proxy"}:
         return 0
 
     if args.trust_ca:
         return _trust_ca_for_current_user(ca_cert_path)
+
+    if args.proxy_mode == "web_proxy":
+        return 0
 
     cfg = CLIENT_CONFIGS[args.client]
     if sys.platform != "darwin" or not cfg.auto_trust_ca_macos:
@@ -295,13 +298,14 @@ async def async_main(args: argparse.Namespace):
         migrate_legacy_traces(output_dir)
 
     store = get_trace_store()
-    trace_metadata = {"client": args.client, "proxy_mode": args.proxy_mode}
+    session_client = "web_proxy" if args.proxy_mode == "web_proxy" else args.client
+    trace_metadata = {"client": session_client, "proxy_mode": args.proxy_mode}
     cfg = CLIENT_CONFIGS[args.client]
     transcript_only = cfg.transcript_only
 
     ca_cert_path: Path | None = None
     ca_key_path: Path | None = None
-    if args.proxy_mode == "forward" and not transcript_only:
+    if args.proxy_mode in {"forward", "web_proxy"} and not transcript_only:
         ca_cert_path, ca_key_path = ensure_ca()
         trust_result = _ensure_ca_trust_for_forward_proxy(args, ca_cert_path)
         if trust_result != 0:
@@ -315,7 +319,7 @@ async def async_main(args: argparse.Namespace):
         transcript_registry = CodexAppTranscriptSessionRegistry(store=store, metadata=trace_metadata)
         cdp_writer = _LazyTraceWriter(client=args.client, proxy_mode=args.proxy_mode, metadata=trace_metadata)
     else:
-        session_id = store.create_session(client=args.client, proxy_mode=args.proxy_mode)
+        session_id = store.create_session(client=session_client, proxy_mode=args.proxy_mode)
         writer = TraceWriter(session_id, live_server=None, metadata=trace_metadata, store=store)
 
     # Ensure the shared dashboard is running (one port for all sessions).
@@ -403,25 +407,34 @@ async def async_main(args: argparse.Namespace):
                 await watch_codex_app_transcripts_to_sessions(transcript_registry, since=client_started_at)
             except asyncio.CancelledError:
                 pass
-        elif args.proxy_mode == "forward":
+        elif args.proxy_mode in {"forward", "web_proxy"}:
             assert ca_cert_path is not None
             assert ca_key_path is not None
             assert session is not None
             assert writer is not None
             ca = CertificateAuthority(ca_cert_path, ca_key_path)
+            is_web_proxy = args.proxy_mode == "web_proxy"
             forward_server = ForwardProxyServer(
                 host=args.host,
                 port=args.port,
                 ca=ca,
                 writer=writer,
                 session=session,
-                local_reverse_target=args.target,
-                local_reverse_allowed_path_prefixes=CLIENT_CONFIGS[args.client].forward_base_url_allowed_path_prefixes,
+                local_reverse_target=None if is_web_proxy else args.target,
+                local_reverse_allowed_path_prefixes=()
+                if is_web_proxy
+                else CLIENT_CONFIGS[args.client].forward_base_url_allowed_path_prefixes,
                 store_stream_events=args.store_stream_events,
                 capture_only=capture_only,
             )
             actual_port = await forward_server.start()
-            print(f"🔍 claude-tap v{__version__} forward proxy on http://{args.host}:{actual_port}")
+            proxy_label = "web proxy" if is_web_proxy else "forward proxy"
+            print(f"🔍 claude-tap v{__version__} {proxy_label} on http://{args.host}:{actual_port}")
+            if is_web_proxy:
+                print("   Configure your browser, system, or client HTTP/HTTPS proxy to this address.")
+                print("   Keep the provider/model base URL set to its original upstream address.")
+                if args.host == "0.0.0.0":
+                    print("   WARNING: proxy is exposed to the local network. Use this machine's LAN IP, not 0.0.0.0.")
             print(f"   CA cert: {ca_cert_path}")
         else:
             assert session is not None
@@ -468,7 +481,8 @@ async def async_main(args: argparse.Namespace):
                 except Exception:
                     pass
 
-            if not args.no_launch:
+            server_only = args.no_launch or args.proxy_mode == "web_proxy"
+            if not server_only:
                 client_started_at = time.time()
                 try:
                     exit_code = await run_client(
@@ -483,7 +497,13 @@ async def async_main(args: argparse.Namespace):
                 except asyncio.CancelledError:
                     pass
             else:
-                print("\n--no-launch mode: proxy running. Press Ctrl+C to stop.")
+                if args.proxy_mode == "web_proxy":
+                    print(
+                        "\nweb_proxy mode: proxy running. Configure your client/browser proxy to the address above. "
+                        "Press Ctrl+C to stop."
+                    )
+                else:
+                    print("\n--no-launch mode: proxy running. Press Ctrl+C to stop.")
                 try:
                     while True:
                         await asyncio.sleep(3600)
@@ -546,6 +566,27 @@ async def async_main(args: argparse.Namespace):
             )
             if cleaned:
                 print(f"\n🧹 Cleaned up {cleaned} old trace session(s)")
+
+        try:
+            from claude_tap.config import get_config
+
+            cleanup_cfg = get_config().get("cleanup", {})
+            max_age = int(cleanup_cfg.get("max_age_days", 0) or 0)
+            max_size = int(cleanup_cfg.get("max_db_size_mb", 0) or 0)
+            only_success = bool(cleanup_cfg.get("only_success", False))
+        except Exception:
+            max_age = max_size = 0
+            only_success = False
+        if max_age > 0 or max_size > 0:
+            result = cleanup_trace_history_by_criteria(
+                max_age_days=max_age,
+                max_db_size_mb=max_size,
+                only_success=only_success,
+                protected_session_id=session_id,
+            )
+            deleted = result.get("deleted_sessions", 0)
+            if deleted:
+                print(f"\n🧹 Cleaned up {deleted} session(s) per settings thresholds")
 
         # Print summary with cost estimation
         if transcript_registry is not None:
@@ -729,9 +770,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "  claude-tap --tap-client codebuddy --tap-target https://www.codebuddy.ai/v2\n"
             '  CODEBUDDY_BASE_URL=https://your-host/v2 claude-tap --tap-client codebuddy -- -p "Reply OK"\n'
             "\n"
-            "proxy-only mode (connect from another terminal):\n"
+            "proxy-only reverse mode (connect from another terminal):\n"
             "  claude-tap --tap-no-launch --tap-port 8080\n"
             "  # then: ANTHROPIC_BASE_URL=http://127.0.0.1:8080 claude\n"
+            "\n"
+            "web proxy mode (browser/system proxy):\n"
+            "  claude-tap --tap-proxy-mode web_proxy --tap-port 8080\n"
+            "  # then configure browser/system HTTP and HTTPS proxy to 127.0.0.1:8080\n"
+            "  # trust the printed claude-tap CA certificate for HTTPS capture\n"
             "\n"
             "export traces:\n"
             "  claude-tap export trace.jsonl              Export to markdown\n"
@@ -785,11 +831,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     proxy_group.add_argument(
         "--tap-proxy-mode",
-        choices=["reverse", "forward"],
+        choices=["reverse", "forward", "web_proxy"],
         default=None,
         dest="proxy_mode",
         help=(
-            "'reverse' sets provider base URL, 'forward' sets HTTPS_PROXY with CONNECT/TLS termination. "
+            "'reverse' sets provider base URL, 'forward' sets HTTPS_PROXY with CONNECT/TLS termination, "
+            "and 'web_proxy' starts a standalone browser/system HTTP(S) proxy without changing provider base URLs. "
             "Default depends on the client: 'reverse' for claude/codex/kimi/kimi-code/openclaw/codebuddy, "
             "'forward' for agy/gemini/mimo/opencode/pi/hermes/cursor/qoder. "
             "codexapp is transcript-only and does not use this option."
@@ -800,7 +847,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         dest="trust_ca",
         help=(
-            "On macOS, explicitly trust the forward-proxy CA in the current user's login keychain before launch "
+            "On macOS, explicitly trust the forward/web-proxy CA in the current user's login keychain before launch "
             "(no sudo; agy does this automatically when needed)"
         ),
     )
@@ -906,10 +953,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "with --tap-client codexapp"
         )
     args.claude_args = claude_args
-    # Default host: 0.0.0.0 in --tap-no-launch mode (proxy-only, typically remote),
-    # 127.0.0.1 otherwise (launching the client locally).
+    # Default host: web_proxy and --tap-no-launch bind to 0.0.0.0 for network exposure;
+    # launching a client locally uses loopback.
     if args.host is None:
-        args.host = "0.0.0.0" if args.no_launch else "127.0.0.1"
+        args.host = "0.0.0.0" if (args.proxy_mode == "web_proxy" or args.no_launch) else "127.0.0.1"
     if args.target is None:
         if args.client == "codex":
             args.target = _detect_codex_target(claude_args)
@@ -928,8 +975,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.proxy_mode = CLIENT_CONFIGS[args.client].default_proxy_mode
     if args.trust_ca and CLIENT_CONFIGS[args.client].transcript_only:
         tap_parser.error("--tap-trust-ca does not apply to transcript-only clients")
-    if args.trust_ca and args.proxy_mode != "forward":
-        tap_parser.error("--tap-trust-ca only applies to forward proxy mode")
+    if args.trust_ca and args.proxy_mode not in {"forward", "web_proxy"}:
+        tap_parser.error("--tap-trust-ca only applies to forward or web_proxy proxy mode")
     if args.codexapp_cdp_endpoint != CODEX_APP_CDP_DEFAULT_ENDPOINT and args.client != "codexapp":
         tap_parser.error("--tap-codexapp-cdp-endpoint only applies to --tap-client codexapp")
 

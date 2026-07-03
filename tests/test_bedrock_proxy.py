@@ -588,11 +588,20 @@ async def test_reverse_proxy_preserves_bedrock_stream_error_without_stream_event
 
 
 class _FakeStreamContent:
-    def __init__(self, body: bytes) -> None:
+    def __init__(self, body: bytes, exc: Exception | None = None) -> None:
         self._body = body
+        self._exc = exc
 
     async def iter_any(self):
         yield self._body[:80]
+        if self._exc:
+            raise self._exc
+        yield self._body[80:]
+
+    async def iter_chunked(self, _size: int):
+        yield self._body[:80]
+        if self._exc:
+            raise self._exc
         yield self._body[80:]
 
 
@@ -601,18 +610,30 @@ class _FakeStreamResponse:
     reason = "OK"
     headers = {"Content-Type": "application/vnd.amazon.eventstream"}
 
-    def __init__(self, body: bytes) -> None:
-        self.content = _FakeStreamContent(body)
+    def __init__(self, body: bytes, exc: Exception | None = None) -> None:
+        self.content = _FakeStreamContent(body, exc)
+        self._body = body
+        self._exc = exc
+        self.closed = False
+
+    async def read(self) -> bytes:
+        if self._exc:
+            raise self._exc
+        return self._body
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class _FakeSession:
-    def __init__(self, body: bytes) -> None:
+    def __init__(self, body: bytes, exc: Exception | None = None) -> None:
         self._body = body
+        self._exc = exc
         self.calls: list[dict[str, Any]] = []
 
     async def request(self, **kwargs):
         self.calls.append(kwargs)
-        return _FakeStreamResponse(self._body)
+        return _FakeStreamResponse(self._body, self._exc)
 
 
 class _MemoryWriter:
@@ -723,4 +744,76 @@ async def test_forward_proxy_preserves_bedrock_stream_error_without_stream_event
     assert body["bedrock_errors"] == [
         {"type": "modelStreamErrorException", "message": "stream failed", "originalStatusCode": 424}
     ]
+    reset_trace_store()
+
+
+@pytest.mark.asyncio
+async def test_forward_proxy_returns_502_when_non_streaming_response_body_is_truncated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, session_id, writer = _make_writer(tmp_path, monkeypatch)
+    fake_session = _FakeSession(b'{"partial":', aiohttp.ClientPayloadError("Response parse failed: truncated"))
+    client_writer = _MemoryWriter()
+    server = ForwardProxyServer(
+        host="127.0.0.1",
+        port=0,
+        ca=object(),
+        writer=writer,
+        session=fake_session,
+    )
+
+    await server._forward_and_record(
+        "POST",
+        "/v1/messages",
+        {"Host": "api.anthropic.com", "Authorization": "Bearer test"},
+        json.dumps({"model": "claude-sonnet-4-6", "messages": [], "stream": False}).encode(),
+        "https://api.anthropic.com/v1/messages",
+        client_writer,
+    )
+
+    writer.close()
+    assert client_writer.data.startswith(b"HTTP/1.1 502 Bad Gateway\r\n")
+    assert b"Content-Length:" in client_writer.data
+    assert b"Response parse failed: truncated" in client_writer.data
+    records = store.load_records(session_id)
+    assert len(records) == 1
+    assert records[0]["response"]["status"] == 502
+    assert "Response parse failed: truncated" in records[0]["response"]["body"]["error"]
+    reset_trace_store()
+
+
+@pytest.mark.asyncio
+async def test_forward_proxy_terminates_chunked_stream_when_upstream_stream_read_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream_body = b'data: {"type":"message_start","message":{"content":[],"usage":{}}}\n\n'
+    store, session_id, writer = _make_writer(tmp_path, monkeypatch)
+    fake_session = _FakeSession(stream_body, aiohttp.ClientPayloadError("connection closed before message completed"))
+    client_writer = _MemoryWriter()
+    server = ForwardProxyServer(
+        host="127.0.0.1",
+        port=0,
+        ca=object(),
+        writer=writer,
+        session=fake_session,
+    )
+
+    await server._forward_and_record(
+        "POST",
+        "/v1/messages",
+        {"Host": "api.anthropic.com", "Authorization": "Bearer test"},
+        json.dumps({"model": "claude-sonnet-4-6", "messages": [], "stream": True}).encode(),
+        "https://api.anthropic.com/v1/messages",
+        client_writer,
+    )
+
+    writer.close()
+    assert b"Transfer-Encoding: chunked" in client_writer.data
+    assert client_writer.data.endswith(b"0\r\n\r\n")
+    records = store.load_records(session_id)
+    assert len(records) == 1
+    assert records[0]["response"]["status"] == 200
+    assert "connection closed before message completed" in records[0]["response"]["body"]["error"]
     reset_trace_store()

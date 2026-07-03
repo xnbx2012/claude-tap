@@ -24,17 +24,27 @@ from claude_tap.cli_clients import CLIENT_CONFIGS, _codex_selected_provider_base
 
 _BACKUP_SUFFIX = ".tap-backup"
 
+if not hasattr(signal, "SIGKILL"):
+    signal.SIGKILL = signal.SIGTERM  # type: ignore[attr-defined]
+
+
+def _home_dir() -> Path:
+    override = os.environ.get("HOME")
+    if override:
+        return Path(override).expanduser()
+    return Path.home()
+
 
 def _state_file() -> Path:
-    return Path.home() / ".claude-tap" / "monitor-state.json"
+    return _home_dir() / ".claude-tap" / "monitor-state.json"
 
 
 def _claude_settings_path() -> Path:
-    return Path.home() / ".claude" / "settings.json"
+    return _home_dir() / ".claude" / "settings.json"
 
 
 def _codex_config_path() -> Path:
-    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "config.toml"
+    return Path(os.environ.get("CODEX_HOME") or _home_dir() / ".codex") / "config.toml"
 
 
 def claude_home_exists() -> bool:
@@ -125,6 +135,7 @@ def _record_backup(path: Path, files: list[dict[str, object]]) -> bool:
     backup = path.with_name(path.name + _BACKUP_SUFFIX)
     if existed:
         shutil.copy2(path, backup)
+        backup.chmod(path.stat().st_mode & 0o777)
     files.append({"path": str(path), "existed": existed, "backup": str(backup) if existed else None})
     return existed
 
@@ -248,7 +259,7 @@ def _terminate_recorded_processes(processes: list[object]) -> None:
             time.sleep(0.05)
         if _pid_exists(pid):
             try:
-                os.kill(pid, signal.SIGKILL)
+                os.kill(pid, signal.SIGKILL)  # type: ignore[attr-defined]
             except OSError:
                 pass
 

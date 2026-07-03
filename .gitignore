@@ -95,3 +95,9 @@ log/
 
 # Ruff / lint cache
 .ruff_cache/
+
+# Local Claude Code settings and command scratch files
+.claude/settings.json
+RUN.md
+curl.txt
+*_out.txt

@@ -36,6 +36,7 @@ from claude_tap.live import LiveViewerServer, _record_limit_from_request
 from claude_tap.trace import TraceWriter
 from claude_tap.trace_log_handler import SQLiteLogHandler
 from claude_tap.trace_store import get_trace_store
+from tests._auth_helpers import login, make_authed_client
 
 
 def _write_jsonl(path: Path, records: list[dict]) -> None:
@@ -1031,7 +1032,8 @@ async def test_dashboard_server_serves_session_api_and_exports(trace_db, tmp_pat
     server = LiveViewerServer(port=0, migrate_from=tmp_path, dashboard_mode=True)
     port = await server.start()
     try:
-        async with aiohttp.ClientSession() as session:
+        async with make_authed_client() as session:
+            await login(session, port)
             async with session.get(f"http://127.0.0.1:{port}/") as resp:
                 assert resp.status == 200
                 html = await resp.text()
@@ -1183,7 +1185,8 @@ async def test_dashboard_session_detail_redacts_sensitive_display_records(trace_
     server = LiveViewerServer(port=0, dashboard_mode=True)
     port = await server.start()
     try:
-        async with aiohttp.ClientSession() as session:
+        async with make_authed_client() as session:
+            await login(session, port)
             async with session.get(f"http://127.0.0.1:{port}/api/sessions/{session_id}/records") as resp:
                 assert resp.status == 200
                 payload = await resp.json()
@@ -1265,7 +1268,8 @@ async def test_dashboard_session_html_uses_remote_records_for_long_codex_prompt(
     server = LiveViewerServer(port=0, dashboard_mode=True)
     port = await server.start()
     try:
-        async with aiohttp.ClientSession() as session:
+        async with make_authed_client() as session:
+            await login(session, port)
             async with session.get(f"http://127.0.0.1:{port}/api/sessions/{session_id}/html") as resp:
                 assert resp.status == 200
                 html = await resp.text()
@@ -1321,7 +1325,8 @@ async def test_dashboard_summary_preview_fields_are_redacted(trace_db) -> None:
     server = LiveViewerServer(port=0, dashboard_mode=True)
     port = await server.start()
     try:
-        async with aiohttp.ClientSession() as session:
+        async with make_authed_client() as session:
+            await login(session, port)
             async with session.get(f"http://127.0.0.1:{port}/api/sessions/{session_id}/records") as resp:
                 assert resp.status == 200
                 payload = await resp.json()
@@ -1408,7 +1413,8 @@ async def test_dashboard_session_filters_apply_before_paging(trace_db) -> None:
     server = LiveViewerServer(port=0, dashboard_mode=True)
     port = await server.start()
     try:
-        async with aiohttp.ClientSession() as session:
+        async with make_authed_client() as session:
+            await login(session, port)
             async with session.get(f"http://127.0.0.1:{port}/api/sessions?limit=100") as resp:
                 assert resp.status == 200
                 payload = await resp.json()
@@ -1439,7 +1445,8 @@ async def test_dashboard_server_sse_events(trace_db) -> None:
     port = await server.start()
     try:
         timeout = aiohttp.ClientTimeout(total=3)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with make_authed_client(timeout=timeout) as session:
+            await login(session, port)
             async with session.get(f"http://127.0.0.1:{port}/api/agents") as resp:
                 assert resp.status == 200
                 assert await resp.json() == {"agents": []}
@@ -1761,7 +1768,8 @@ async def test_dashboard_delete_current_live_session_is_protected(trace_db) -> N
     server = LiveViewerServer(port=0, session_id=session_id, dashboard_mode=True)
     port = await server.start()
     try:
-        async with aiohttp.ClientSession() as session:
+        async with make_authed_client() as session:
+            await login(session, port)
             async with session.delete(f"http://127.0.0.1:{port}/api/sessions/{session_id}") as resp:
                 assert resp.status == 409
                 payload = await resp.json()
@@ -1785,7 +1793,8 @@ async def test_dashboard_delete_active_session_is_protected(trace_db) -> None:
     server = LiveViewerServer(port=0, dashboard_mode=True)
     port = await server.start()
     try:
-        async with aiohttp.ClientSession() as session:
+        async with make_authed_client() as session:
+            await login(session, port)
             async with session.get(f"http://127.0.0.1:{port}/api/sessions") as resp:
                 assert resp.status == 200
                 payload = await resp.json()
@@ -1831,7 +1840,8 @@ async def test_dashboard_lists_stale_active_session_as_complete(trace_db) -> Non
     server = LiveViewerServer(port=0, dashboard_mode=True)
     port = await server.start()
     try:
-        async with aiohttp.ClientSession() as session:
+        async with make_authed_client() as session:
+            await login(session, port)
             async with session.get(f"http://127.0.0.1:{port}/api/sessions") as resp:
                 assert resp.status == 200
                 payload = await resp.json()
@@ -1860,7 +1870,8 @@ async def test_dashboard_delete_stale_active_session_is_allowed(trace_db) -> Non
     server = LiveViewerServer(port=0, dashboard_mode=True)
     port = await server.start()
     try:
-        async with aiohttp.ClientSession() as session:
+        async with make_authed_client() as session:
+            await login(session, port)
             async with session.delete(f"http://127.0.0.1:{port}/api/sessions/{session_id}") as resp:
                 assert resp.status == 200
                 payload = await resp.json()
@@ -1933,7 +1944,8 @@ async def test_dashboard_bulk_delete_skips_active_sessions(trace_db) -> None:
     server = LiveViewerServer(port=0, dashboard_mode=True)
     port = await server.start()
     try:
-        async with aiohttp.ClientSession() as session:
+        async with make_authed_client() as session:
+            await login(session, port)
             async with session.delete(
                 f"http://127.0.0.1:{port}/api/sessions",
                 json={"session_ids": [first_id, second_id, active_id, stale_active_id, "missing"]},

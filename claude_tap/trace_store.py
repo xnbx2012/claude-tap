@@ -27,7 +27,7 @@ from claude_tap.compact_trace import (
 )
 
 DB_FILENAME = "traces.sqlite3"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 STALE_ACTIVE_SESSION_AFTER = timedelta(hours=24)
 
@@ -41,6 +41,8 @@ class SessionQuery:
     search: str = ""
     agent_clients: tuple[str, ...] = ()
     agent_labels: tuple[str, ...] = ()
+    user_key: str = ""
+    upstream_session_id: str = ""
 
 
 _store: TraceStore | None = None
@@ -95,6 +97,8 @@ class TraceStore:
         client: str = "",
         proxy_mode: str = "",
         started_at: datetime | None = None,
+        upstream_session_id: str = "",
+        user_key: str = "",
     ) -> str:
         """Create a new active trace session and return its id."""
         session_id = str(uuid.uuid4())
@@ -106,14 +110,69 @@ class TraceStore:
             conn.execute(
                 """
                 INSERT INTO sessions (
-                    id, started_at, updated_at, date_key, client, proxy_mode, status, record_count
+                    id, started_at, updated_at, date_key, client, proxy_mode, status, record_count,
+                    upstream_session_id, user_key
                 )
-                VALUES (?, ?, ?, ?, ?, ?, 'active', 0)
+                VALUES (?, ?, ?, ?, ?, ?, 'active', 0, ?, ?)
                 """,
-                (session_id, started_at_iso, started_at_iso, date_key, client, proxy_mode),
+                (
+                    session_id,
+                    started_at_iso,
+                    started_at_iso,
+                    date_key,
+                    client,
+                    proxy_mode,
+                    upstream_session_id,
+                    user_key,
+                ),
             )
             conn.commit()
         return session_id
+
+    def attach_upstream_identity(self, session_id: str, *, upstream_session_id: str = "", user_key: str = "") -> None:
+        """Attach request-derived user/session identity to a trace session."""
+        upstream_session_id = str(upstream_session_id or "")
+        user_key = str(user_key or "")
+        if not upstream_session_id and not user_key:
+            return
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                """
+                UPDATE sessions
+                SET upstream_session_id = CASE
+                        WHEN ? != '' AND COALESCE(upstream_session_id, '') = '' THEN ?
+                        ELSE upstream_session_id
+                    END,
+                    user_key = CASE
+                        WHEN ? != '' AND COALESCE(user_key, '') = '' THEN ?
+                        ELSE user_key
+                    END
+                WHERE id = ?
+                """,
+                (upstream_session_id, upstream_session_id, user_key, user_key, session_id),
+            )
+            conn.commit()
+
+    def find_active_session_by_upstream_id(self, upstream_session_id: str) -> sqlite3.Row | None:
+        """Return the most recent non-complete session for an upstream session id."""
+        upstream_session_id = str(upstream_session_id or "").strip()
+        if not upstream_session_id:
+            return None
+        conn = self._connect()
+        return conn.execute(
+            """
+            SELECT *
+            FROM sessions
+            WHERE upstream_session_id = ?
+              AND status IN ('active', 'error')
+            ORDER BY COALESCE(julianday(updated_at), 0) DESC,
+                     COALESCE(julianday(started_at), 0) DESC,
+                     id DESC
+            LIMIT 1
+            """,
+            (upstream_session_id,),
+        ).fetchone()
 
     def append_record(self, session_id: str, record: dict[str, Any]) -> None:
         """Append one API trace record to a session."""
@@ -362,6 +421,42 @@ class TraceStore:
             """
         ).fetchall()
 
+    def list_user_buckets(self) -> list[sqlite3.Row]:
+        """Return session counts grouped by Authorization-derived user key."""
+        conn = self._connect()
+        return conn.execute(
+            """
+            SELECT user_key AS key,
+                   COUNT(*) AS sessions,
+                   COALESCE(SUM(record_count), 0) AS records
+            FROM sessions
+            WHERE COALESCE(user_key, '') != ''
+            GROUP BY user_key
+            ORDER BY LOWER(user_key), user_key
+            """
+        ).fetchall()
+
+    def list_upstream_session_buckets(self, user_key: str = "") -> list[sqlite3.Row]:
+        """Return session counts grouped by upstream Claude Code session id."""
+        conn = self._connect()
+        params: list[object] = []
+        where = "WHERE COALESCE(upstream_session_id, '') != ''"
+        if user_key:
+            where += " AND user_key = ?"
+            params.append(user_key)
+        return conn.execute(
+            f"""
+            SELECT upstream_session_id AS key,
+                   COUNT(*) AS sessions,
+                   COALESCE(SUM(record_count), 0) AS records
+            FROM sessions
+            {where}
+            GROUP BY upstream_session_id
+            ORDER BY LOWER(upstream_session_id), upstream_session_id
+            """,
+            params,
+        ).fetchall()
+
     def delete_sessions(self, session_ids: list[str]) -> dict[str, int | list[str]]:
         """Delete multiple trace sessions and their dependent records/logs."""
         unique_ids = list(dict.fromkeys(session_id for session_id in session_ids if session_id))
@@ -406,6 +501,138 @@ class TraceStore:
             "deleted_records": deleted_records,
             "deleted_logs": deleted_logs,
             "missing_sessions": missing_ids,
+        }
+
+    def storage_stats(self) -> dict[str, Any]:
+        """Return storage usage statistics for the dashboard settings page."""
+        db_size = 0
+        for path in (
+            self.db_path,
+            self.db_path.with_suffix(self.db_path.suffix + "-wal"),
+            self.db_path.with_suffix(self.db_path.suffix + "-shm"),
+        ):
+            try:
+                db_size += path.stat().st_size
+            except OSError:
+                pass
+        conn = self._connect()
+        session_row = conn.execute(
+            "SELECT COUNT(*) AS sessions, COALESCE(SUM(record_count), 0) AS records FROM sessions"
+        ).fetchone()
+        log_row = conn.execute("SELECT COALESCE(SUM(LENGTH(message)), 0) AS log_bytes FROM proxy_logs").fetchone()
+        bounds_row = conn.execute(
+            """
+            SELECT MIN(started_at) AS oldest, MAX(updated_at) AS newest
+            FROM sessions
+            WHERE record_count > 0
+            """
+        ).fetchone()
+        sessions = int(session_row["sessions"] or 0) if session_row else 0
+        records = int(session_row["records"] or 0) if session_row else 0
+        log_bytes = int(log_row["log_bytes"] or 0) if log_row else 0
+        oldest = str(bounds_row["oldest"] or "") if bounds_row else ""
+        newest = str(bounds_row["newest"] or "") if bounds_row else ""
+        return {
+            "db_path": str(self.db_path),
+            "db_size_bytes": db_size,
+            "session_count": sessions,
+            "record_count": records,
+            "log_bytes_estimate": log_bytes,
+            "oldest_session_started_at": oldest,
+            "newest_session_updated_at": newest,
+        }
+
+    def cleanup_by_criteria(
+        self,
+        *,
+        max_age_days: int = 0,
+        max_db_size_mb: int = 0,
+        only_success: bool = False,
+        dry_run: bool = False,
+        protected_session_ids: set[str] | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Delete sessions matching age/size/success criteria and return impact stats."""
+        protected = set(protected_session_ids or set())
+        before = self.storage_stats()
+        now_dt = now or datetime.now(timezone.utc)
+        with self._write_lock:
+            conn = self._connect()
+            clauses = ["record_count > 0"]
+            params: list[object] = []
+            if max_age_days and max_age_days > 0:
+                cutoff = (now_dt - timedelta(days=max_age_days)).isoformat()
+                clauses.append("COALESCE(julianday(updated_at), 0) <= julianday(?)")
+                params.append(cutoff)
+            if only_success:
+                clauses.append(
+                    "(status NOT IN ('error') AND NOT (json_valid(summary_json) "
+                    "AND json_extract(summary_json, '$.status') = 'error'))"
+                )
+            rows = conn.execute(
+                f"""
+                SELECT id, record_count, summary_json
+                FROM sessions
+                WHERE {" AND ".join(clauses)}
+                ORDER BY COALESCE(julianday(updated_at), 0) ASC,
+                         COALESCE(julianday(started_at), 0) ASC,
+                         id ASC
+                """,
+                params,
+            ).fetchall()
+            candidates = [row for row in rows if row["id"] not in protected]
+
+            def session_bytes(row: sqlite3.Row) -> int:
+                rec_row = conn.execute(
+                    "SELECT COALESCE(SUM(LENGTH(payload_json)), 0) AS bytes FROM records WHERE session_id = ?",
+                    (row["id"],),
+                ).fetchone()
+                log_row_local = conn.execute(
+                    "SELECT COALESCE(SUM(LENGTH(message)), 0) AS bytes FROM proxy_logs WHERE session_id = ?",
+                    (row["id"],),
+                ).fetchone()
+                return int(rec_row["bytes"] or 0) + int(log_row_local["bytes"] or 0)
+
+            target_ids: list[str] = []
+            if max_db_size_mb and max_db_size_mb > 0:
+                target_bytes = max_db_size_mb * 1024 * 1024
+                current_bytes = before["db_size_bytes"]
+                for row in candidates:
+                    if current_bytes <= target_bytes:
+                        break
+                    target_ids.append(row["id"])
+                    current_bytes -= session_bytes(row)
+                # If both age and size criteria are set, age already filtered above;
+                # size just trims further from the oldest. If only size, candidates
+                # is already ordered oldest-first so this is correct.
+                if max_age_days and max_age_days > 0:
+                    # candidates were already age-filtered; target_ids is the subset to drop
+                    pass
+            else:
+                target_ids = [row["id"] for row in candidates]
+
+            deleted_records = 0
+            deleted_logs = 0
+            for sid in target_ids:
+                rec_row = conn.execute("SELECT COUNT(*) AS c FROM records WHERE session_id = ?", (sid,)).fetchone()
+                log_row_local = conn.execute(
+                    "SELECT COUNT(*) AS c FROM proxy_logs WHERE session_id = ?", (sid,)
+                ).fetchone()
+                deleted_records += int(rec_row["c"] or 0)
+                deleted_logs += int(log_row_local["c"] or 0)
+
+            if target_ids and not dry_run:
+                placeholders = ",".join("?" * len(target_ids))
+                conn.execute(f"DELETE FROM sessions WHERE id IN ({placeholders})", target_ids)
+                conn.commit()
+        after = self.storage_stats()
+        return {
+            "deleted_sessions": len(target_ids),
+            "deleted_records": deleted_records,
+            "deleted_logs": deleted_logs,
+            "dry_run": dry_run,
+            "before": before,
+            "after": after,
         }
 
     def finalize_stale_active_sessions(
@@ -974,6 +1201,9 @@ class TraceStore:
             current = 3
         if current == 3:
             self._migrate_v3_to_v4(conn)
+            current = 4
+        if current == 4:
+            self._migrate_v4_to_v5(conn)
             return
         if current != SCHEMA_VERSION:
             raise RuntimeError(f"Unsupported trace database schema version {current}; expected {SCHEMA_VERSION}.")
@@ -987,6 +1217,8 @@ class TraceStore:
         self._create_v3_tables(conn)
         self._create_v4_tables(conn)
         self._create_v3_indexes(conn)
+        self._create_v5_tables(conn)
+        self._create_v5_indexes(conn)
 
     def _migrate_v2_to_v3(self, conn: sqlite3.Connection) -> None:
         suffix = uuid.uuid4().hex
@@ -1042,6 +1274,12 @@ class TraceStore:
 
     def _migrate_v3_to_v4(self, conn: sqlite3.Connection) -> None:
         self._create_v4_tables(conn)
+        conn.execute("PRAGMA user_version = 4")
+        conn.commit()
+
+    def _migrate_v4_to_v5(self, conn: sqlite3.Connection) -> None:
+        self._create_v5_tables(conn)
+        self._create_v5_indexes(conn)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
 
@@ -1059,7 +1297,9 @@ class TraceStore:
                 record_count INTEGER NOT NULL DEFAULT 0,
                 summary_json TEXT,
                 legacy_source_key TEXT NOT NULL DEFAULT '',
-                legacy_rel_path TEXT
+                legacy_rel_path TEXT,
+                upstream_session_id TEXT NOT NULL DEFAULT '',
+                user_key TEXT NOT NULL DEFAULT ''
             )
             """
         )
@@ -1111,6 +1351,29 @@ class TraceStore:
                 PRIMARY KEY (session_id, hash),
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             )
+            """
+        )
+
+    def _create_v5_tables(self, conn: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+        if "upstream_session_id" not in columns:
+            conn.execute("ALTER TABLE sessions ADD COLUMN upstream_session_id TEXT NOT NULL DEFAULT ''")
+        if "user_key" not in columns:
+            conn.execute("ALTER TABLE sessions ADD COLUMN user_key TEXT NOT NULL DEFAULT ''")
+
+    def _create_v5_indexes(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_sessions_upstream_session_id
+            ON sessions(upstream_session_id)
+            WHERE upstream_session_id != ''
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_sessions_user_key
+            ON sessions(user_key)
+            WHERE user_key != ''
             """
         )
 
@@ -1204,6 +1467,13 @@ class TraceStore:
                 agent_clauses.append(f"{summary_agent_expr} IN ({placeholders})")
                 params.extend(label.lower() for label in query.agent_labels)
             clauses.append(f"({' OR '.join(agent_clauses)})")
+
+        if query.user_key:
+            clauses.append("user_key = ?")
+            params.append(query.user_key)
+        if query.upstream_session_id:
+            clauses.append("upstream_session_id = ?")
+            params.append(query.upstream_session_id)
 
         search = query.search.strip().lower()
         if search:

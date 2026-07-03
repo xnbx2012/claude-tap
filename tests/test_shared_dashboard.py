@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import signal
 import subprocess
 from pathlib import Path
@@ -91,8 +92,8 @@ def test_sync_dashboard_health_uses_proxyless_opener(monkeypatch: pytest.MonkeyP
             calls.append((url, timeout))
             return FakeResponse()
 
-    db_path = tmp_path / "health.sqlite3"
-    json_bytes = f'{{"ok":true,"db_path":"{db_path}","version":"{CLAUDE_TAP_VERSION}"}}'.encode()
+    db_path = (tmp_path / "health.sqlite3").resolve()
+    json_bytes = json.dumps({"ok": True, "db_path": str(db_path), "version": CLAUDE_TAP_VERSION}).encode("utf-8")
     calls: list[tuple[str, float]] = []
     monkeypatch.setenv("CLOUDTAP_DB", str(db_path))
     monkeypatch.setattr("claude_tap.shared_dashboard._LOCAL_DASHBOARD_OPENER", FakeOpener())
@@ -119,8 +120,8 @@ def test_sync_dashboard_health_rejects_stale_version(monkeypatch: pytest.MonkeyP
             assert timeout > 0
             return FakeResponse()
 
-    db_path = tmp_path / "health.sqlite3"
-    json_bytes = f'{{"ok":true,"db_path":"{db_path}","version":"0.1.106"}}'.encode()
+    db_path = (tmp_path / "health.sqlite3").resolve()
+    json_bytes = json.dumps({"ok": True, "db_path": str(db_path), "version": "0.1.106"}).encode("utf-8")
     monkeypatch.setenv("CLOUDTAP_DB", str(db_path))
     monkeypatch.setattr("claude_tap.shared_dashboard._LOCAL_DASHBOARD_OPENER", FakeOpener())
 
@@ -161,7 +162,11 @@ def test_spawn_dashboard_subprocess(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     assert kwargs["stdin"] == subprocess.DEVNULL
     assert kwargs["stdout"] == subprocess.DEVNULL
     assert kwargs["stderr"] == subprocess.DEVNULL
-    assert kwargs["start_new_session"] is True
+    # start_new_session is POSIX-only; on Windows the equivalent is a detached process group.
+    import sys as _sys
+
+    if _sys.platform != "win32":
+        assert kwargs["start_new_session"] is True
 
 
 def test_spawn_dashboard_subprocess_hides_windows_console(
@@ -449,8 +454,12 @@ def test_dashboard_listening_pids_handles_missing_tools(monkeypatch: pytest.Monk
 
 
 def test_dashboard_process_command_reads_linux_proc(monkeypatch: pytest.MonkeyPatch) -> None:
+    expected = Path("/proc/123/cmdline")
+
     def fake_read_bytes(path: Path) -> bytes:
-        assert str(path) == "/proc/123/cmdline"
+        # On Windows, pathlib.Path normalises POSIX-style paths to backslashes;
+        # on Linux they stay as-is. Compare with the same normalisation.
+        assert path == expected
         return b"python\0-m\0claude_tap\0dashboard\0"
 
     monkeypatch.setattr("claude_tap.shared_dashboard.sys.platform", "linux")

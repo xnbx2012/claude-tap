@@ -34,7 +34,10 @@ from aiohttp._websocket.reader import WebSocketDataQueue, WebSocketReader
 from aiohttp.http_websocket import WS_KEY, WebSocketWriter
 
 from claude_tap.bedrock import attach_bedrock_errors, is_bedrock_eventstream_path
+from claude_tap.capture_policy import should_save_record
 from claude_tap.certs import CertificateAuthority
+from claude_tap.config import get_config
+from claude_tap.identity import extract_session_identity
 from claude_tap.proxy import (
     HOP_BY_HOP,
     _build_record,
@@ -240,6 +243,18 @@ class ForwardProxyServer:
         self._client_writers: set[asyncio.StreamWriter] = set()
         self._turn_counter = 0
         self.actual_port: int = port
+
+    async def _write_if_policy_allows(self, record: dict) -> None:
+        """Write a record unless the capture policy says to skip it."""
+        identity = record.get("capture_identity") if isinstance(record, dict) else None
+        user_key = str(identity.get("user_key") or "") if isinstance(identity, dict) else ""
+        request = record.get("request") if isinstance(record, dict) else None
+        req_body = request.get("body") if isinstance(request, dict) else None
+        model = req_body.get("model", "") if isinstance(req_body, dict) else ""
+        response = record.get("response") if isinstance(record, dict) else None
+        status = response.get("status", 0) if isinstance(response, dict) else 0
+        if should_save_record(get_config(), user_key=user_key, model=model, status=status):
+            await self._writer.write(record)
 
     async def start(self) -> int:
         """Start the forward proxy server. Returns the actual port."""
@@ -492,6 +507,8 @@ class ForwardProxyServer:
         log_prefix = f"[Turn {turn}]"
 
         req_body = _parse_request_body_for_trace(body)
+        upstream_session_id, user_key = extract_session_identity(headers)
+        self._writer.note_identity(upstream_session_id=upstream_session_id, user_key=user_key)
 
         is_streaming = is_capture_only_streaming_request(path, req_body)
 
@@ -514,7 +531,7 @@ class ForwardProxyServer:
                 response_headers,
                 resp_body,
             )
-            await self._writer.write(record)
+            await self._write_if_policy_allows(record)
             body_bytes = (
                 capture_only_stream_bytes(path, req_body)
                 if is_streaming
@@ -561,7 +578,7 @@ class ForwardProxyServer:
                 {"Content-Type": "text/plain"},
                 {"error": error_text},
             )
-            await self._writer.write(record)
+            await self._write_if_policy_allows(record)
             response_line = b"HTTP/1.1 502 Bad Gateway\r\n"
             resp_headers = f"Content-Length: {len(error_body)}\r\nContent-Type: text/plain\r\n\r\n"
             client_writer.write(response_line + resp_headers.encode() + error_body)
@@ -580,6 +597,7 @@ class ForwardProxyServer:
                 headers,
                 req_body,
                 log_prefix,
+                upstream_url,
             )
         else:
             await self._handle_non_streaming(
@@ -596,6 +614,51 @@ class ForwardProxyServer:
                 upstream_url,
             )
 
+    async def _send_upstream_read_error(
+        self,
+        exc: Exception,
+        client_writer: asyncio.StreamWriter,
+        req_id: str,
+        turn: int,
+        t0: float,
+        method: str,
+        path: str,
+        req_headers: dict[str, str],
+        req_body: dict | None,
+        log_prefix: str,
+        upstream_url: str,
+        upstream_headers: Mapping[str, str] | None = None,
+    ) -> None:
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        error_text = format_upstream_error(exc, target_url=upstream_url, upstream_url=upstream_url)
+        log.error(f"{log_prefix} upstream response read error: {error_text}")
+        response_headers = {"Content-Type": "text/plain"}
+        if upstream_headers:
+            response_headers["X-Claude-Tap-Upstream-Status"] = str(
+                _header_value(upstream_headers, ":status") or "received"
+            )
+        record = _build_record(
+            req_id,
+            turn,
+            duration_ms,
+            method,
+            path,
+            req_headers,
+            req_body,
+            502,
+            response_headers,
+            {"error": error_text},
+        )
+        await self._write_if_policy_allows(record)
+        error_body = error_text.encode("utf-8", errors="replace")
+        client_writer.write(
+            b"HTTP/1.1 502 Bad Gateway\r\n"
+            + f"Content-Length: {len(error_body)}\r\n".encode("ascii")
+            + b"Content-Type: text/plain\r\n\r\n"
+            + error_body
+        )
+        await client_writer.drain()
+
     async def _handle_streaming(
         self,
         upstream_resp: aiohttp.ClientResponse,
@@ -608,6 +671,7 @@ class ForwardProxyServer:
         req_headers: dict[str, str],
         req_body: dict | None,
         log_prefix: str,
+        upstream_url: str,
     ) -> None:
         """Handle a streaming response: forward chunks while recording SSE."""
         # Send response status line
@@ -626,6 +690,7 @@ class ForwardProxyServer:
         reassembler = SSEReassembler(store_events=self._store_stream_events)
         raw_chunks: list[bytes] = []
 
+        stream_error: str | None = None
         try:
             async for chunk in upstream_resp.content.iter_any():
                 # Send as HTTP chunked encoding
@@ -636,8 +701,11 @@ class ForwardProxyServer:
                     raw_chunks.append(chunk)
                 else:
                     reassembler.feed_bytes(chunk)
-        except (ConnectionError, asyncio.CancelledError):
-            pass
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            stream_error = format_upstream_error(exc, target_url=upstream_url, upstream_url=upstream_url)
+            log.error(f"{log_prefix} upstream stream read error: {stream_error}")
 
         # Send final chunk
         try:
@@ -659,6 +727,14 @@ class ForwardProxyServer:
             reconstructed = attach_bedrock_errors(reconstructed, bedrock_events)
         else:
             reconstructed = reassembler.reconstruct()
+
+        if stream_error:
+            if isinstance(reconstructed, dict):
+                reconstructed.setdefault("error", {"message": stream_error})
+            elif reconstructed:
+                reconstructed = {"partial_response": reconstructed, "error": stream_error}
+            else:
+                reconstructed = {"error": stream_error}
 
         usage = normalize_usage(reconstructed.get("usage", {}) if isinstance(reconstructed, dict) else {})
         in_tok = usage.get("input_tokens", 0)
@@ -683,7 +759,7 @@ class ForwardProxyServer:
             reconstructed,
             sse_events=reassembler.events,
         )
-        await self._writer.write(record)
+        await self._write_if_policy_allows(record)
 
     async def _handle_non_streaming(
         self,
@@ -706,7 +782,24 @@ class ForwardProxyServer:
             log.info(f"{log_prefix} <- {upstream_resp.status} ({duration_ms}ms, {total_bytes} bytes, trace skipped)")
             return
 
-        resp_bytes = await upstream_resp.read()
+        try:
+            resp_bytes = await upstream_resp.read()
+        except Exception as exc:
+            await self._send_upstream_read_error(
+                exc,
+                client_writer,
+                req_id,
+                turn,
+                t0,
+                method,
+                path,
+                req_headers,
+                req_body,
+                log_prefix,
+                upstream_url,
+                upstream_resp.headers,
+            )
+            return
         duration_ms = int((time.monotonic() - t0) * 1000)
 
         # Decompress for JSON parsing
@@ -740,7 +833,7 @@ class ForwardProxyServer:
             dict(upstream_resp.headers),
             resp_body,
         )
-        await self._writer.write(record)
+        await self._write_if_policy_allows(record)
 
         await self._send_buffered_response(upstream_resp, client_writer, resp_bytes)
 
@@ -767,6 +860,7 @@ class ForwardProxyServer:
         client_writer: asyncio.StreamWriter,
     ) -> int:
         total_bytes = 0
+        chunked = False
         try:
             status_line = f"HTTP/1.1 {upstream_resp.status} {upstream_resp.reason}\r\n"
             client_writer.write(status_line.encode())
@@ -795,6 +889,17 @@ class ForwardProxyServer:
                 client_writer.write(b"0\r\n\r\n")
                 await client_writer.drain()
             return total_bytes
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if chunked:
+                try:
+                    client_writer.write(b"0\r\n\r\n")
+                    await client_writer.drain()
+                except Exception:
+                    pass
+            log.error(f"Error relaying unrecorded response: {exc}")
+            return total_bytes
         finally:
             upstream_resp.close()
 
@@ -815,6 +920,8 @@ class ForwardProxyServer:
         log_prefix = f"[Turn {turn}]"
         upstream_base_url = f"https://{hostname}:{port}"
         upstream_ws_url = f"wss://{hostname}:{port}{path}"
+        upstream_session_id, user_key = extract_session_identity(headers)
+        self._writer.note_identity(upstream_session_id=upstream_session_id, user_key=user_key)
 
         fwd_headers = filter_headers(headers)
         fwd_headers.pop("Host", None)
@@ -887,7 +994,7 @@ class ForwardProxyServer:
                 "response": {"status": 502, "headers": {}, "body": None, "error": str(exc)},
                 "upstream_base_url": upstream_base_url,
             }
-            await self._writer.write(record)
+            await self._write_if_policy_allows(record)
             return
 
         sec_key = headers.get("Sec-WebSocket-Key") or headers.get("sec-websocket-key")
@@ -1029,7 +1136,7 @@ class ForwardProxyServer:
             "response": response_record,
             "upstream_base_url": upstream_base_url,
         }
-        await self._writer.write(record)
+        await self._write_if_policy_allows(record)
         log.info(
             f"{log_prefix} <- WS closed ({duration_ms}ms, "
             f"{len(client_messages)} client→upstream, {len(server_messages)} upstream→client)"
@@ -1149,7 +1256,7 @@ class ForwardProxyServer:
             "response": response_record,
             "upstream_base_url": upstream_base_url,
         }
-        await self._writer.write(record)
+        await self._write_if_policy_allows(record)
         log.info(f"{log_prefix} <- WS capture-only ({duration_ms}ms, upstream skipped)")
 
     async def _handle_plain_proxy(

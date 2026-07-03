@@ -535,14 +535,19 @@ claude-tap export trace.ctap.json -o trace.html
 claude-tap --tap-output-dir ./my-traces
 claude-tap --tap-max-traces 10
 
-# 只启动代理，给自定义场景使用
+# 只启动反向代理，给自定义 base URL 场景使用
 claude-tap --tap-no-launch --tap-port 8080
+
+# 启动独立的浏览器/系统 HTTP(S) 代理，不改模型 base URL
+claude-tap --tap-proxy-mode web_proxy --tap-port 8080
 
 # 不自动在浏览器里打开实时或生成的查看器
 claude-tap --tap-no-open
 ```
 
-纯代理模式下，可以在另一个终端启动客户端，并把它的 base URL 或代理配置指向本地代理。具体接法见 [客户端支持矩阵](docs/support-matrix.md)。
+反向纯代理模式下，可以在另一个终端启动客户端，并把它的 base URL 指向本地代理。具体接法见 [客户端支持矩阵](docs/support-matrix.md)。
+
+`web_proxy` 模式下，模型/provider base URL 保持原始上游地址，只把浏览器、系统或客户端的 HTTP/HTTPS proxy 配置为启动时打印的 `claude-tap` 地址，例如 `http://127.0.0.1:8080`。HTTPS 抓包需要信任打印出的 claude-tap CA 证书（`~/.claude-tap/ca.crt`）；否则代理只能看到 CONNECT host，看不到请求 path 或 body。Windows、Linux、macOS 和 Docker 安装步骤见 [信任自签名 CA](docs/guides/self-signed-ca.zh.md)。不要让运行 `claude-tap` 本身的 shell 也把代理指向同一个端口，否则上游请求可能回环到代理自身。
 
 作为 VSCode Claude Code 的 `claudeProcessWrapper` 使用时，claude-tap 会识别扩展传入的 Claude binary 路径并用它启动 Claude。
 
@@ -563,13 +568,13 @@ macOS 上，`claude-tap build-macos-app` 会生成本地 `Claude Tap.app`。该 
 --tap-no-open            不自动在浏览器里打开实时或生成的 HTML 查看器
 --tap-output-dir DIR     Trace 输出目录（默认: ./.traces）
 --tap-port PORT          代理端口（默认: 自动分配）
---tap-host HOST          绑定地址（默认: 127.0.0.1，--tap-no-launch 模式下为 0.0.0.0）
+--tap-host HOST          绑定地址（默认: web_proxy 和 --tap-no-launch 为 0.0.0.0，其他为 127.0.0.1）
 --tap-no-launch          仅启动代理，不启动客户端
 --tap-max-traces N       最大保留 trace 数量（默认: 50，0 = 不限）
 --tap-store-stream-events 捕获时把原始 SSE/WebSocket event 数组写入 trace 存储，以便查看器/导出结果展示（默认关闭）
 --tap-no-update-check    禁用启动时的 PyPI 更新检查
 --tap-no-auto-update     仅检查更新，不自动下载
---tap-proxy-mode MODE    代理模式: reverse 或 forward（默认：claude/codex/kimi/kimi-code/openclaw/codebuddy 用 reverse，agy/gemini/mimo/opencode/pi/hermes/cursor/qoder 用 forward；codexapp 是 transcript-only）
+--tap-proxy-mode MODE    代理模式: reverse、forward 或 web_proxy（默认：claude/codex/kimi/kimi-code/openclaw/codebuddy 用 reverse，agy/gemini/mimo/opencode/pi/hermes/cursor/qoder 用 forward；web_proxy 是独立代理模式；codexapp 是 transcript-only）
 --tap-trust-ca           macOS 上显式把本地 CA 信任到当前用户 login keychain（agy 会自动执行）
 ```
 

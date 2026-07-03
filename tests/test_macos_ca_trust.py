@@ -25,6 +25,13 @@ def test_parse_args_accepts_tap_trust_ca() -> None:
     assert args.trust_ca is True
 
 
+def test_parse_args_accepts_tap_trust_ca_with_web_proxy() -> None:
+    args = parse_args(["--tap-proxy-mode", "web_proxy", "--tap-trust-ca"])
+
+    assert args.proxy_mode == "web_proxy"
+    assert args.trust_ca is True
+
+
 def test_parse_args_agy_does_not_require_tap_trust_ca() -> None:
     args = parse_args(["--tap-client", "agy"])
 
@@ -257,6 +264,34 @@ def test_explicit_ca_trust_still_runs_for_other_forward_clients(monkeypatch: pyt
 
     assert _ensure_ca_trust_for_forward_proxy(args, ca_path) == 0
     assert trusted == [ca_path]
+
+
+def test_web_proxy_explicit_ca_trust_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    ca_path = Path("/tmp/claude-tap-ca.pem")
+    args = parse_args(["--tap-proxy-mode", "web_proxy", "--tap-trust-ca"])
+    trusted: list[Path] = []
+
+    monkeypatch.setattr("claude_tap.cli._trust_ca_for_current_user", lambda path: trusted.append(path) or 0)
+
+    assert _ensure_ca_trust_for_forward_proxy(args, ca_path) == 0
+    assert trusted == [ca_path]
+
+
+def test_web_proxy_does_not_auto_trust_for_agy(monkeypatch: pytest.MonkeyPatch) -> None:
+    ca_path = Path("/tmp/claude-tap-ca.pem")
+    args = parse_args(["--tap-client", "agy", "--tap-proxy-mode", "web_proxy"])
+
+    monkeypatch.setattr("claude_tap.cli.sys.platform", "darwin")
+    monkeypatch.setattr(
+        "claude_tap.cli.is_macos_ca_trusted",
+        lambda _: (_ for _ in ()).throw(AssertionError("web_proxy should not auto-check CA trust")),
+    )
+    monkeypatch.setattr(
+        "claude_tap.cli._trust_ca_for_current_user",
+        lambda _: (_ for _ in ()).throw(AssertionError("web_proxy should not auto-install CA trust")),
+    )
+
+    assert _ensure_ca_trust_for_forward_proxy(args, ca_path) == 0
 
 
 @pytest.mark.asyncio

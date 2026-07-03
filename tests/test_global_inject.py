@@ -180,7 +180,8 @@ def test_backup_preserves_existing_config_permissions(_home: Path) -> None:
 
     backup_path = settings_path.with_name("settings.json.tap-backup")
     assert backup_path.exists()
-    assert (backup_path.stat().st_mode & 0o777) == 0o600
+    if os.name != "nt":
+        assert (backup_path.stat().st_mode & 0o777) == 0o600
 
 
 def test_codex_injects_selected_custom_provider_base_url(_home: Path) -> None:

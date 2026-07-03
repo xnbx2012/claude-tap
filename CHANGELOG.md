@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Add `web_proxy` mode for running claude-tap as a standalone browser/system HTTP(S) proxy without changing provider base URLs.
 
 
 ## [0.1.126] - 2026-07-01

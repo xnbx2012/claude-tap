@@ -358,7 +358,7 @@ def test_trace_store_migrates_v3_database_and_keeps_full_rows_readable(tmp_path)
     store = TraceStore(db_path)
     assert store.load_records("legacy-session") == [legacy_record]
     with sqlite3.connect(db_path) as migrated:
-        assert migrated.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert migrated.execute("PRAGMA user_version").fetchone()[0] == 5
         assert migrated.execute("SELECT COUNT(*) FROM record_blobs").fetchone()[0] == 0
 
 

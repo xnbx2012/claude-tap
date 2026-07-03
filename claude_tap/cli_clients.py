@@ -729,8 +729,15 @@ def _toml_dotted_key_segment(value: str) -> str:
     return json.dumps(value)
 
 
+def _config_home() -> Path:
+    override = os.environ.get("HOME")
+    if override:
+        return Path(override).expanduser()
+    return Path.home()
+
+
 def _codex_home() -> Path:
-    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    return Path(os.environ.get("CODEX_HOME") or _config_home() / ".codex")
 
 
 def _read_codex_config() -> dict[str, object]:
@@ -805,7 +812,7 @@ def _resolve_env_value(env_key: str) -> str:
     candidate_paths = (
         Path.cwd() / ".claude" / "settings.local.json",
         Path.cwd() / ".claude" / "settings.json",
-        Path.home() / ".claude" / "settings.json",
+        _config_home() / ".claude" / "settings.json",
     )
     for path in candidate_paths:
         found = _read_settings_env_base_url(path, env_key)

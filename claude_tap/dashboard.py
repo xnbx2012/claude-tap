@@ -34,12 +34,11 @@ CLIENT_LABELS = {
     "pi": "Pi",
     "qoder": "Qoder",
 }
-DASHBOARD_SUMMARY_VERSION = 2
+DASHBOARD_SUMMARY_VERSION = 3
 VALID_SESSION_STATUSES = {"active", "complete", "error", "empty"}
 _REDACTED_VALUE = "REDACTED"
 _SENSITIVE_KEY_NAMES = {
     "apikey",
-    "authorization",
     "clientsecret",
     "cookie",
     "idtoken",
@@ -72,6 +71,8 @@ def build_session_query(
     status: str = "",
     search: str = "",
     agent: str = "",
+    user: str = "",
+    upstream_session: str = "",
 ) -> SessionQuery:
     """Build a SQLite-backed session query from dashboard filter values."""
     normalized_date = date if date == "legacy" or _DATE_RE.match(date) else ""
@@ -83,6 +84,8 @@ def build_session_query(
         search=search.strip(),
         agent_clients=agent_clients,
         agent_labels=agent_labels,
+        user_key=user.strip(),
+        upstream_session_id=upstream_session.strip(),
     )
 
 
@@ -174,6 +177,30 @@ def list_trace_agents(
     return sorted(buckets.values(), key=lambda item: (item["label"].lower(), item["key"]))
 
 
+def list_trace_users() -> list[dict[str, Any]]:
+    """Return Authorization-derived user buckets for dashboard filters."""
+    try:
+        rows = ensure_trace_store().list_user_buckets()
+    except (OSError, sqlite3.Error, ValueError):
+        rows = []
+    return [
+        {"key": str(row["key"] or ""), "sessions": int(row["sessions"] or 0), "records": int(row["records"] or 0)}
+        for row in rows
+    ]
+
+
+def list_trace_upstream_sessions(user_key: str = "") -> list[dict[str, Any]]:
+    """Return upstream session id buckets for dashboard filters."""
+    try:
+        rows = ensure_trace_store().list_upstream_session_buckets(user_key)
+    except (OSError, sqlite3.Error, ValueError):
+        rows = []
+    return [
+        {"key": str(row["key"] or ""), "sessions": int(row["sessions"] or 0), "records": int(row["records"] or 0)}
+        for row in rows
+    ]
+
+
 def dashboard_trace_snapshot() -> dict[str, tuple[str, int, str]]:
     """Return a cheap SQLite snapshot for dashboard refresh detection."""
     store = ensure_trace_store()
@@ -228,6 +255,8 @@ def merge_record_into_summary(
     manifest_entry = {
         "client": row["client"] or "",
         "proxy_mode": row["proxy_mode"] or "",
+        "upstream_session_id": _row_value(row, "upstream_session_id"),
+        "user_key": _row_value(row, "user_key"),
     }
     if summary is None or summary.get("id") != row["id"]:
         initial_summary = _summarize_session(
@@ -276,6 +305,12 @@ def merge_record_into_summary(
         if not summary.get("started_at"):
             summary["started_at"] = timestamp
     summary["last_response"] = _last_response_preview([record])
+    identity = _summary_identity(manifest_entry, [record])
+    if identity["user_key"]:
+        summary["user_key"] = identity["user_key"]
+    if identity["upstream_session_id"]:
+        summary["upstream_session_id"] = identity["upstream_session_id"]
+        summary["display_session_id"] = identity["display_session_id"]
     if not summary.get("first_user"):
         summary["first_user"] = _first_user_preview([record])
     if not summary.get("agent"):
@@ -301,6 +336,8 @@ def build_stored_session_summary(row: sqlite3.Row, records: list[dict[str, Any]]
     manifest_entry = {
         "client": row["client"] or "",
         "proxy_mode": row["proxy_mode"] or "",
+        "upstream_session_id": _row_value(row, "upstream_session_id"),
+        "user_key": _row_value(row, "user_key"),
     }
     return _summarize_session(
         session_id=row["id"],
@@ -367,6 +404,8 @@ def _session_summary_from_row(
     manifest_entry = {
         "client": row["client"] or "",
         "proxy_mode": row["proxy_mode"] or "",
+        "upstream_session_id": _row_value(row, "upstream_session_id"),
+        "user_key": _row_value(row, "user_key"),
     }
     if record_count == 0:
         summary = _summarize_session(
@@ -430,6 +469,8 @@ def _minimal_session_summary_from_row(row: sqlite3.Row) -> dict[str, Any]:
     manifest_entry = {
         "client": row["client"] or "",
         "proxy_mode": row["proxy_mode"] or "",
+        "upstream_session_id": _row_value(row, "upstream_session_id"),
+        "user_key": _row_value(row, "user_key"),
     }
     summary = _summarize_session(
         session_id=row["id"],
@@ -509,6 +550,14 @@ def _normalize_cached_session_summary(row: sqlite3.Row, cached: dict[str, Any]) 
     return redact_dashboard_summary(summary)
 
 
+def _row_value(row: sqlite3.Row, key: str) -> str:
+    try:
+        value = row[key]
+    except (IndexError, KeyError):
+        return ""
+    return str(value or "")
+
+
 def _apply_current_session_state(
     session: dict[str, Any],
     current_session_id: str | None,
@@ -584,11 +633,15 @@ def _summarize_session(
     error_display_records = error_records or (auxiliary_error_records if has_error else [])
     preview_records = _preview_records(records)
     count = record_count if record_count is not None else len(records)
+    identity = _summary_identity(manifest_entry, records)
     return redact_dashboard_summary(
         {
             "id": session_id,
             "summary_version": DASHBOARD_SUMMARY_VERSION,
             "date": date_key if _DATE_RE.match(date_key) else "legacy",
+            "user_key": identity["user_key"],
+            "upstream_session_id": identity["upstream_session_id"],
+            "display_session_id": identity["display_session_id"] or session_id,
             "agent": agent,
             "agent_key": _agent_key(agent),
             "status": resolved_status,
@@ -611,6 +664,38 @@ def _summarize_session(
             "error": _first_error(error_display_records),
         }
     )
+
+
+def _summary_identity(manifest_entry: dict[str, Any], records: list[dict[str, Any]]) -> dict[str, str]:
+    upstream_session_id = str(manifest_entry.get("upstream_session_id") or "")
+    user_key = str(manifest_entry.get("user_key") or "")
+    for record in records:
+        identity = record.get("capture_identity") if isinstance(record, dict) else None
+        if isinstance(identity, dict):
+            upstream_session_id = upstream_session_id or str(identity.get("upstream_session_id") or "")
+            user_key = user_key or str(identity.get("user_key") or "")
+        request = record.get("request") if isinstance(record, dict) else None
+        headers = request.get("headers") if isinstance(request, dict) else None
+        if isinstance(headers, dict):
+            if not upstream_session_id:
+                upstream_session_id = _case_insensitive_header(headers, "x-claude-code-session-id")
+            if not user_key:
+                user_key = _case_insensitive_header(headers, "authorization")
+        if upstream_session_id and user_key:
+            break
+    return {
+        "upstream_session_id": upstream_session_id,
+        "user_key": user_key,
+        "display_session_id": upstream_session_id,
+    }
+
+
+def _case_insensitive_header(headers: dict[str, Any], name: str) -> str:
+    wanted = name.lower()
+    for key, value in headers.items():
+        if str(key).lower() == wanted:
+            return str(value or "")
+    return ""
 
 
 def _iso_now() -> str:

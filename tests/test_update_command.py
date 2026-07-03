@@ -163,7 +163,15 @@ def test_update_main_runs_selected_command(monkeypatch: pytest.MonkeyPatch) -> N
 
     assert update_main(["--installer", "pip"]) == 7
     assert captured["cmd"] == [sys.executable, "-m", "pip", "install", "--upgrade", "claude-tap"]
-    assert captured["kwargs"] == {"check": False}
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["check"] is False
+    if sys.platform == "win32":
+        assert kwargs["stdin"] == subprocess.DEVNULL
+        assert "creationflags" in kwargs
+        assert "startupinfo" in kwargs
+    else:
+        assert kwargs == {"check": False}
 
 
 def test_update_main_hides_windows_console(monkeypatch: pytest.MonkeyPatch) -> None:
