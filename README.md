@@ -585,10 +585,12 @@ docker run --rm \
   DOCKERHUB_USER/claude-tap:latest \
   --tap-proxy-mode forward
 
-# View the live dashboard inside the container
-docker run --rm -p 127.0.0.1:8080:8080 -p 127.0.0.1:9229:9229 \
+# View the live dashboard alongside the proxy
+docker run --rm \
+  -p 127.0.0.1:8080:8080 \
+  -p 127.0.0.1:19527:19527 \
   DOCKERHUB_USER/claude-tap:latest \
-  --tap-proxy-mode forward --tap-live-port 9229
+  --tap-proxy-mode forward
 ```
 
 Volume mounts:
@@ -603,7 +605,7 @@ Ports:
 | Port | Purpose |
 |------|---------|
 | `8080` | Forward / web_proxy MITM proxy |
-| `9229` (default) | Live trace viewer (auto-assigned; see startup log) |
+| `19527` (default) | Live trace viewer (auto-assigned; see startup log) |
 
 HTTPS capture requires trusting the container's CA certificate. See [Trusting the self-signed CA](docs/guides/self-signed-ca.md) for instructions on installing `/root/.claude-tap/ca.crt` from the volume mount.
 

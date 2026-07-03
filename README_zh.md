@@ -579,9 +579,11 @@ docker run --rm \
   --tap-proxy-mode forward
 
 # 在容器内查看实时 dashboard
-docker run --rm -p 127.0.0.1:8080:8080 -p 127.0.0.1:9229:9229 \
+docker run --rm \
+  -p 127.0.0.1:8080:8080 \
+  -p 127.0.0.1:19527:19527 \
   DOCKERHUB_USER/claude-tap:latest \
-  --tap-proxy-mode forward --tap-live-port 9229
+  --tap-proxy-mode forward
 ```
 
 卷挂载说明：
@@ -596,7 +598,7 @@ docker run --rm -p 127.0.0.1:8080:8080 -p 127.0.0.1:9229:9229 \
 | 端口 | 用途 |
 |------|------|
 | `8080` | Forward / web_proxy MITM 代理 |
-| `9229`（默认） | 实时 trace 查看器（自动分配，见启动日志） |
+| `19527`（默认） | 实时 trace 查看器（自动分配，见启动日志） |
 
 HTTPS 抓包需要信任容器内的 CA 证书。从卷挂载的 `/root/.claude-tap/ca.crt` 安装方法见 [信任自签名 CA](docs/guides/self-signed-ca.zh.md)。
 
