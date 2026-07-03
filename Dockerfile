@@ -1,8 +1,11 @@
 FROM python:3.13-slim AS runtime
 
+ARG PACKAGE_VERSION=0.0.0
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CLAUDE_TAP=${PACKAGE_VERSION}
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
