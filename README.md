@@ -561,36 +561,17 @@ A pre-built image is published to Docker Hub on every push to `main` and every v
 # Pull the latest image
 docker pull DOCKERHUB_USER/claude-tap:latest
 
-# Run forward proxy (e.g. for agy/gemini clients), persisting traces and CA to host
-docker run -d \
-  -p 127.0.0.1:8080:8080 \
-  -v "$(pwd)/traces:/root/.traces" \
-  -v "$(pwd)/ca:/root/.claude-tap" \
-  --name claude-tap \
-  DOCKERHUB_USER/claude-tap:latest \
-  --tap-proxy-mode forward
-
 # Run web_proxy mode (browser/system proxy), persisting traces and CA to host
+#   - Proxy:   http://localhost:8080
+#   - Dashboard: http://localhost:19527
 docker run -d \
-  -p 0.0.0.0:8080:8080 \
+  -p 8080:8080 \
+  -p 19527:19527 \
   -v "$(pwd)/traces:/root/.traces" \
   -v "$(pwd)/ca:/root/.claude-tap" \
   --name claude-tap \
   DOCKERHUB_USER/claude-tap:latest \
-  --tap-proxy-mode web_proxy --tap-host 0.0.0.0 --tap-no-open
-
-# Run without persisting traces (ephemeral)
-docker run --rm \
-  -p 127.0.0.1:8080:8080 \
-  DOCKERHUB_USER/claude-tap:latest \
-  --tap-proxy-mode forward
-
-# View the live dashboard alongside the proxy
-docker run --rm \
-  -p 127.0.0.1:8080:8080 \
-  -p 127.0.0.1:19527:19527 \
-  DOCKERHUB_USER/claude-tap:latest \
-  --tap-proxy-mode forward
+  --tap-proxy-mode web_proxy --tap-host 0.0.0.0 --tap-live --tap-live-port 19527 --tap-no-open
 ```
 
 Volume mounts:
@@ -604,12 +585,14 @@ Ports:
 
 | Port | Purpose |
 |------|---------|
-| `8080` | Forward / web_proxy MITM proxy |
-| `19527` (default) | Live trace viewer (auto-assigned; see startup log) |
+| `8080` | web_proxy MITM proxy (configure browser/system proxy to this) |
+| `19527` | Live trace viewer (browse to this to open the dashboard) |
 
 HTTPS capture requires trusting the container's CA certificate. See [Trusting the self-signed CA](docs/guides/self-signed-ca.md) for instructions on installing `/root/.claude-tap/ca.crt` from the volume mount.
 
-In proxy-only reverse mode, start your client in another terminal and point its base URL at the local proxy. Use the [client support matrix](docs/support-matrix.md) for exact wiring.
+When the container is running, configure your browser or system HTTP/HTTPS proxy to `http://localhost:8080`. Open `http://localhost:19527` in a browser to access the trace dashboard.
+
+## Reverse proxy mode
 
 In `web_proxy` mode, keep the provider/model base URL set to its original upstream address and configure the browser, system, or client HTTP/HTTPS proxy to the printed `claude-tap` address, for example `http://127.0.0.1:8080`. HTTPS capture requires trusting the printed claude-tap CA certificate (`~/.claude-tap/ca.crt`); otherwise the proxy can only see the CONNECT host, not request paths or bodies. See [Trusting the self-signed CA](docs/guides/self-signed-ca.md) for Windows, Linux, macOS, and Docker instructions. Do not point the shell running `claude-tap` at the same proxy port, or outbound upstream requests can loop back into the proxy.
 

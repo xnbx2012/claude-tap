@@ -554,36 +554,17 @@ claude-tap --tap-no-open
 # 拉取最新镜像
 docker pull DOCKERHUB_USER/claude-tap:latest
 
-# 运行 forward proxy（如 agy/gemini 客户端），持久化 traces 和 CA 到主机
-docker run -d \
-  -p 127.0.0.1:8080:8080 \
-  -v "$(pwd)/traces:/root/.traces" \
-  -v "$(pwd)/ca:/root/.claude-tap" \
-  --name claude-tap \
-  DOCKERHUB_USER/claude-tap:latest \
-  --tap-proxy-mode forward
-
 # 运行 web_proxy 模式（浏览器/系统代理），持久化 traces 和 CA 到主机
+#   - 代理地址：   http://localhost:8080
+#   - Dashboard 地址：http://localhost:19527
 docker run -d \
-  -p 0.0.0.0:8080:8080 \
+  -p 8080:8080 \
+  -p 19527:19527 \
   -v "$(pwd)/traces:/root/.traces" \
   -v "$(pwd)/ca:/root/.claude-tap" \
   --name claude-tap \
   DOCKERHUB_USER/claude-tap:latest \
-  --tap-proxy-mode web_proxy --tap-host 0.0.0.0 --tap-no-open
-
-# 不持久化运行（临时容器）
-docker run --rm \
-  -p 127.0.0.1:8080:8080 \
-  DOCKERHUB_USER/claude-tap:latest \
-  --tap-proxy-mode forward
-
-# 在容器内查看实时 dashboard
-docker run --rm \
-  -p 127.0.0.1:8080:8080 \
-  -p 127.0.0.1:19527:19527 \
-  DOCKERHUB_USER/claude-tap:latest \
-  --tap-proxy-mode forward
+  --tap-proxy-mode web_proxy --tap-host 0.0.0.0 --tap-live --tap-live-port 19527 --tap-no-open
 ```
 
 卷挂载说明：
@@ -597,10 +578,14 @@ docker run --rm \
 
 | 端口 | 用途 |
 |------|------|
-| `8080` | Forward / web_proxy MITM 代理 |
-| `19527`（默认） | 实时 trace 查看器（自动分配，见启动日志） |
+| `8080` | web_proxy MITM 代理（将浏览器/系统 HTTP/HTTPS 代理指向此端口） |
+| `19527` | 实时 trace 查看器（在浏览器中打开此地址访问 dashboard） |
 
 HTTPS 抓包需要信任容器内的 CA 证书。从卷挂载的 `/root/.claude-tap/ca.crt` 安装方法见 [信任自签名 CA](docs/guides/self-signed-ca.zh.md)。
+
+容器启动后，将浏览器或系统 HTTP/HTTPS 代理配置为 `http://localhost:8080`，在浏览器中访问 `http://localhost:19527` 即可打开 trace dashboard。
+
+## 反向代理模式
 
 反向纯代理模式下，可以在另一个终端启动客户端，并把它的 base URL 指向本地代理。具体接法见 [客户端支持矩阵](docs/support-matrix.md)。
 
