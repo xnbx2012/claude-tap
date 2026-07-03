@@ -452,6 +452,7 @@ claude-tap --tap-client cursor -- -p --trust --model auto --continue "continue"
 - [OpenClaw setup guide](docs/guides/OPENCLAW_README.md) for integrating `claude-tap` with OpenClaw. Simplified Chinese version: [OpenClaw 设置指南](docs/guides/OPENCLAW_README.zh.md).
 - [Claude Code with DeepSeek API](docs/guides/deepseek-claude-code.md) for routing Claude Code through DeepSeek's Anthropic-compatible API. Simplified Chinese version: [Claude Code 搭配 DeepSeek API](docs/guides/deepseek-claude-code.zh.md).
 - [Client support matrix](docs/support-matrix.md) for exact environment variables, proxy modes, and URL rewrite rules.
+- [Docker](Dockerfile) for running claude-tap as a container. A usage example and volume/port reference is included below.
 - [Trusting the self-signed CA](docs/guides/self-signed-ca.md) for installing the claude-tap `ca.crt` on Windows, Linux, macOS, and Docker. Simplified Chinese version: [信任自签名 CA](docs/guides/self-signed-ca.zh.md).
 
 <details>
@@ -551,6 +552,60 @@ claude-tap --tap-proxy-mode web_proxy --tap-port 8080
 # Disable browser auto-open for live and generated viewers
 claude-tap --tap-no-open
 ```
+
+## Docker
+
+A pre-built image is published to Docker Hub on every push to `main` and every version tag.
+
+```bash
+# Pull the latest image
+docker pull DOCKERHUB_USER/claude-tap:latest
+
+# Run forward proxy (e.g. for agy/gemini clients), persisting traces and CA to host
+docker run -d \
+  -p 127.0.0.1:8080:8080 \
+  -v "$(pwd)/traces:/root/.traces" \
+  -v "$(pwd)/ca:/root/.claude-tap" \
+  --name claude-tap \
+  DOCKERHUB_USER/claude-tap:latest \
+  --tap-proxy-mode forward
+
+# Run web_proxy mode (browser/system proxy), persisting traces and CA to host
+docker run -d \
+  -p 0.0.0.0:8080:8080 \
+  -v "$(pwd)/traces:/root/.traces" \
+  -v "$(pwd)/ca:/root/.claude-tap" \
+  --name claude-tap \
+  DOCKERHUB_USER/claude-tap:latest \
+  --tap-proxy-mode web_proxy --tap-host 0.0.0.0 --tap-no-open
+
+# Run without persisting traces (ephemeral)
+docker run --rm \
+  -p 127.0.0.1:8080:8080 \
+  DOCKERHUB_USER/claude-tap:latest \
+  --tap-proxy-mode forward
+
+# View the live dashboard inside the container
+docker run --rm -p 127.0.0.1:8080:8080 -p 127.0.0.1:9229:9229 \
+  DOCKERHUB_USER/claude-tap:latest \
+  --tap-proxy-mode forward --tap-live-port 9229
+```
+
+Volume mounts:
+
+| Host path | Container path | Contents |
+|-----------|---------------|----------|
+| `./traces` | `/root/.traces` | SQLite trace DB and JSONL session files |
+| `./ca` | `/root/.claude-tap` | CA certificate (`ca.crt`) and private key (`ca-key.pem`) |
+
+Ports:
+
+| Port | Purpose |
+|------|---------|
+| `8080` | Forward / web_proxy MITM proxy |
+| `9229` (default) | Live trace viewer (auto-assigned; see startup log) |
+
+HTTPS capture requires trusting the container's CA certificate. See [Trusting the self-signed CA](docs/guides/self-signed-ca.md) for instructions on installing `/root/.claude-tap/ca.crt` from the volume mount.
 
 In proxy-only reverse mode, start your client in another terminal and point its base URL at the local proxy. Use the [client support matrix](docs/support-matrix.md) for exact wiring.
 

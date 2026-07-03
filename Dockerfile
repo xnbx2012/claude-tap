@@ -9,16 +9,21 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /root/.claude-tap /root/.traces
 
-WORKDIR /app
+# Trace output and CA directory are persisted at these host paths:
+#   - /root/.claude-tap   — CA certificate and private key
+#   - /root/.traces       — SQLite trace database and JSONL files
+# Default proxy port is 8080 (forward / web_proxy).
+WORKDIR /root
+
+EXPOSE 8080
 
 COPY pyproject.toml README.md ./
 COPY claude_tap ./claude_tap
 
 RUN pip install .
-
-EXPOSE 8080
 
 ENTRYPOINT ["claude-tap"]
 CMD ["--help"]

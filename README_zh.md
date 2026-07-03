@@ -445,6 +445,7 @@ claude-tap --tap-client cursor -- -p --trust --model auto --continue "continue"
 - [OpenClaw 设置指南](docs/guides/OPENCLAW_README.zh.md)：在 OpenClaw 中集成 `claude-tap`。英文版见 [OpenClaw setup guide](docs/guides/OPENCLAW_README.md)。
 - [Claude Code 搭配 DeepSeek API](docs/guides/deepseek-claude-code.zh.md)：让 Claude Code 走 DeepSeek 的 Anthropic 兼容 API。英文版见 [Claude Code with DeepSeek API](docs/guides/deepseek-claude-code.md)。
 - [客户端支持矩阵](docs/support-matrix.md)：查看各客户端对应的环境变量、代理模式和 URL 改写规则。
+- [Docker](Dockerfile)：以容器方式运行 claude-tap。下面包含了使用示例和卷/端口说明。
 - [信任自签名 CA](docs/guides/self-signed-ca.zh.md)：在 Windows、Linux、macOS 和 Docker 中安装 claude-tap `ca.crt`。英文版见 [Trusting the self-signed CA](docs/guides/self-signed-ca.md)。
 
 <details>
@@ -544,6 +545,60 @@ claude-tap --tap-proxy-mode web_proxy --tap-port 8080
 # 不自动在浏览器里打开实时或生成的查看器
 claude-tap --tap-no-open
 ```
+
+## Docker
+
+每次 push 到 `main` 和打版本 tag 时，预构建镜像会自动发布到 Docker Hub。
+
+```bash
+# 拉取最新镜像
+docker pull DOCKERHUB_USER/claude-tap:latest
+
+# 运行 forward proxy（如 agy/gemini 客户端），持久化 traces 和 CA 到主机
+docker run -d \
+  -p 127.0.0.1:8080:8080 \
+  -v "$(pwd)/traces:/root/.traces" \
+  -v "$(pwd)/ca:/root/.claude-tap" \
+  --name claude-tap \
+  DOCKERHUB_USER/claude-tap:latest \
+  --tap-proxy-mode forward
+
+# 运行 web_proxy 模式（浏览器/系统代理），持久化 traces 和 CA 到主机
+docker run -d \
+  -p 0.0.0.0:8080:8080 \
+  -v "$(pwd)/traces:/root/.traces" \
+  -v "$(pwd)/ca:/root/.claude-tap" \
+  --name claude-tap \
+  DOCKERHUB_USER/claude-tap:latest \
+  --tap-proxy-mode web_proxy --tap-host 0.0.0.0 --tap-no-open
+
+# 不持久化运行（临时容器）
+docker run --rm \
+  -p 127.0.0.1:8080:8080 \
+  DOCKERHUB_USER/claude-tap:latest \
+  --tap-proxy-mode forward
+
+# 在容器内查看实时 dashboard
+docker run --rm -p 127.0.0.1:8080:8080 -p 127.0.0.1:9229:9229 \
+  DOCKERHUB_USER/claude-tap:latest \
+  --tap-proxy-mode forward --tap-live-port 9229
+```
+
+卷挂载说明：
+
+| 主机路径 | 容器路径 | 内容 |
+|---------|---------|------|
+| `./traces` | `/root/.traces` | SQLite trace 数据库和 JSONL 会话文件 |
+| `./ca` | `/root/.claude-tap` | CA 证书（`ca.crt`）和私钥（`ca-key.pem`） |
+
+端口说明：
+
+| 端口 | 用途 |
+|------|------|
+| `8080` | Forward / web_proxy MITM 代理 |
+| `9229`（默认） | 实时 trace 查看器（自动分配，见启动日志） |
+
+HTTPS 抓包需要信任容器内的 CA 证书。从卷挂载的 `/root/.claude-tap/ca.crt` 安装方法见 [信任自签名 CA](docs/guides/self-signed-ca.zh.md)。
 
 反向纯代理模式下，可以在另一个终端启动客户端，并把它的 base URL 指向本地代理。具体接法见 [客户端支持矩阵](docs/support-matrix.md)。
 
